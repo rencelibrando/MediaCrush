@@ -1,6 +1,44 @@
 # MediaCrush 
 
-A centralized media compression application .
+A feature-rich, cross-platform media compression application with automatic hardware detection and GPU acceleration.
+
+## About
+
+MediaCrush is a powerful desktop application for compressing images and videos with modern GPU acceleration. It automatically detects your hardware (CPU/GPU) and selects the optimal encoding method for maximum performance on both Linux and Windows.
+
+### Purpose
+
+MediaCrush was created to solve the common problem of large media files taking up too much storage space. Whether you're a photographer with thousands of RAW images, a content creator with 4K videos, or just someone trying to free up disk space, MediaCrush makes compression easy and efficient.
+
+### Key Highlights
+
+- **Cross-platform**: Runs on Linux and Windows with automatic platform detection
+- **Smart hardware detection**: Automatically finds and uses the best GPU encoder available (NVENC, VAAPI, QSV, D3D11VA)
+- **Optimal performance**: Auto-configures worker counts based on your CPU cores
+- **User-friendly**: Modern dark/light GUI with drag & drop support
+- **Batch processing**: Compress entire folders recursively
+- **Real-time feedback**: Live progress tracking, statistics, and logs
+
+### Tech Stack
+
+- **GUI**: PySide6 (Qt6)
+- **Image compression**: Pillow, pillow-heif
+- **Video compression**: FFmpeg with hardware acceleration
+- **Python**: 3.8+
+
+### License
+
+This project is open source. Feel free to use, modify, and distribute as needed.
+
+### Contributing
+
+Contributions are welcome! If you find a bug or have a feature request, please open an issue on GitHub.
+
+### Acknowledgments
+
+- FFmpeg for powerful video encoding capabilities
+- Pillow for image processing
+- PySide6 for the modern GUI framework
 
 ## Features
 
