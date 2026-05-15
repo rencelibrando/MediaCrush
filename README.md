@@ -1,4 +1,4 @@
-# MediaCrush 🎬
+# MediaCrush 
 
 A centralized media compression application .
 
