@@ -1,0 +1,4 @@
+~/.local/share/MediaCrush/sync-from-dev.sh
+
+#quick testing
+python3 ~/Downloads/MediaCrush/main.py
