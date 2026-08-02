@@ -20,20 +20,59 @@ A centralized media compression application .
 
 ### Linux
 
-```bash
-# 1. Install dependencies
-pip3 install -r requirements.txt
+**Automatic Installation (Recommended):**
 
-# 2. Install xcb-cursor for GUI display
+```bash
+# 1. Clone the repository
+git clone https://github.com/rencelibrando/MediaCrush.git
+cd MediaCrush
+
+# 2. Run the installer
+chmod +x install_linux.sh
+./install_linux.sh
+```
+
+The installer does everything for you:
+- **Copies the app** to a permanent folder: `~/.local/share/mediacrush`
+- **Creates a Python virtual environment** and installs `requirements.txt`
+- **Installs FFmpeg** if missing (prompts for sudo; on Fedora it may ask you to enable RPM Fusion first)
+- **Creates a launcher** at `~/.local/bin/mediacrush`
+- **Creates a desktop shortcut** on your Desktop and in the app menu
+
+```bash
+# 3. Launch
+mediacrush
+# or click the MediaCrush desktop/app-menu icon
+```
+
+**Manual Installation:**
+
+```bash
+# 1. Install Python 3.8+ and FFmpeg (required for video compression)
+# Debian/Ubuntu:
+sudo apt install python3 python3-venv ffmpeg
+# Fedora/RHEL:
+sudo dnf install python3
+#   FFmpeg on Fedora usually needs RPM Fusion first:
+sudo dnf install -y https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
+sudo dnf install -y ffmpeg
+
+# 2. Create a virtual environment and install dependencies
+cd MediaCrush
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# 3. Install xcb-cursor for GUI display
 # Debian/Ubuntu:
 sudo apt install libxcb-cursor0
 # Fedora/RHEL:
-# sudo dnf install xcb-util-cursor
+sudo dnf install xcb-util-cursor
 # Arch:
-# sudo pacman -S libxcb
+sudo pacman -S libxcb
 
-# 3. Run
-python3 main.py
+# 4. Run
+python main.py
 ```
 
 ### Windows
