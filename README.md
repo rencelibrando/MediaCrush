@@ -25,7 +25,12 @@ A centralized media compression application .
 pip3 install -r requirements.txt
 
 # 2. Install xcb-cursor for GUI display
+# Debian/Ubuntu:
 sudo apt install libxcb-cursor0
+# Fedora/RHEL:
+# sudo dnf install xcb-util-cursor
+# Arch:
+# sudo pacman -S libxcb
 
 # 3. Run
 python3 main.py

@@ -1,6 +1,9 @@
 """Live performance monitor — CPU, RAM, GPU, active workers."""
 from __future__ import annotations
+import os
+import subprocess
 import threading
+from utils.process import hidden_subprocess_kwargs
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QProgressBar, QSizePolicy, QGridLayout
@@ -79,7 +82,44 @@ class _PerfPoller:
             return util, mem.used / 1e9
         except Exception:
             pass
+
+        if os.name == "nt":
+            return _PerfPoller._windows_gpu()
         return -1.0, 0.0  # -1 = GPU present but no util metric
+
+    @staticmethod
+    def _windows_gpu() -> tuple[float, float]:
+        try:
+            util_cmd = [
+                "powershell", "-NoProfile", "-Command",
+                "$samples = (Get-Counter '\\GPU Engine(*)\\Utilization Percentage' "
+                "-ErrorAction Stop).CounterSamples; "
+                "$sum = ($samples | Measure-Object -Property CookedValue -Sum).Sum; "
+                "[math]::Round([math]::Min(100, [double]$sum), 1)"
+            ]
+            mem_cmd = [
+                "powershell", "-NoProfile", "-Command",
+                "$ded = (Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Usage' "
+                "-ErrorAction SilentlyContinue).CounterSamples | "
+                "Measure-Object -Property CookedValue -Sum; "
+                "$shr = (Get-Counter '\\GPU Adapter Memory(*)\\Shared Usage' "
+                "-ErrorAction SilentlyContinue).CounterSamples | "
+                "Measure-Object -Property CookedValue -Sum; "
+                "[math]::Round((([double]$ded.Sum + [double]$shr.Sum) / 1GB), 2)"
+            ]
+            util = subprocess.run(
+                util_cmd, capture_output=True, text=True, timeout=5,
+                **hidden_subprocess_kwargs(),
+            )
+            mem = subprocess.run(
+                mem_cmd, capture_output=True, text=True, timeout=5,
+                **hidden_subprocess_kwargs(),
+            )
+            gpu_pct = float((util.stdout or "0").strip() or 0.0)
+            vram_gb = float((mem.stdout or "0").strip() or 0.0)
+            return gpu_pct, vram_gb
+        except Exception:
+            return -1.0, 0.0
 
 
 # ── UI helpers ────────────────────────────────────────────────────────────────

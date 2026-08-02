@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QPushButton, QLabel, QProgressBar, QFileDialog,
     QComboBox, QToolBar, QStatusBar, QFrame,
-    QSizePolicy, QApplication, QListWidgetItem, QTabWidget, QSplitter,
+    QSizePolicy, QApplication, QTabWidget, QSplitter,
     QScrollArea
 )
 from PySide6.QtCore import Qt, QSize, Slot, Signal, QTimer
@@ -477,8 +477,6 @@ class MainWindow(QMainWindow):
 
         threading.Thread(target=_scan, daemon=True).start()
 
-    MAX_VISIBLE = 500
-
     def _add_paths(self, paths: list[Path]):
         out_mode = self._settings.get("engine.output_mode", "inplace")
         out_dir  = (Path(self._settings.get("engine.output_dir", ""))
@@ -500,10 +498,6 @@ class MainWindow(QMainWindow):
 
         self._engine.add_tasks(new_tasks)
 
-        visible_now   = self.queue_widget.count()
-        tasks_to_show = new_tasks[:max(0, self.MAX_VISIBLE - visible_now)]
-        hidden        = len(new_tasks) - len(tasks_to_show)
-
         def _add_batch(items, idx=0):
             batch = items[idx:idx + 100]
             for task in batch:
@@ -511,36 +505,15 @@ class MainWindow(QMainWindow):
             if idx + 100 < len(items):
                 QTimer.singleShot(0, lambda: _add_batch(items, idx + 100))
             else:
-                if hidden > 0:
-                    self._show_hidden_banner(hidden)
                 total = len(self._engine.get_tasks())
                 self.queue_count.setText(
                     f"{total} file{'s' if total != 1 else ''}"
                 )
                 self.status_lbl.setText(
                     f"Added {len(new_tasks)} file(s) — total {total}"
-                    + (f"  (+{hidden} not shown)" if hidden else "")
                 )
 
-        if tasks_to_show:
-            QTimer.singleShot(0, lambda: _add_batch(tasks_to_show))
-        else:
-            total = len(self._engine.get_tasks())
-            self.queue_count.setText(f"{total} file{'s' if total != 1 else ''}")
-            self.status_lbl.setText(f"Added {len(new_tasks)} file(s) — total {total}")
-            if hidden > 0:
-                self._show_hidden_banner(hidden)
-
-    def _show_hidden_banner(self, n: int):
-        item = QListWidgetItem(self.queue_widget)
-        lbl  = QLabel(f"  + {n:,} more files queued (not shown for performance)")
-        lbl.setStyleSheet(
-            "color: #475569; font-style: italic; font-size: 11px; padding: 8px; "
-            "background: transparent; border: none;"
-        )
-        item.setSizeHint(QSize(0, 34))
-        self.queue_widget.addItem(item)
-        self.queue_widget.setItemWidget(item, lbl)
+        QTimer.singleShot(0, lambda: _add_batch(new_tasks))
 
     # ── Dialogs ───────────────────────────────────────────────────────────────
 

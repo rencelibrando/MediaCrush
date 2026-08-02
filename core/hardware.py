@@ -8,6 +8,8 @@ import platform
 from dataclasses import dataclass, field
 from typing import Optional
 
+from utils.process import hidden_subprocess_kwargs
+
 
 # ── Data class ───────────────────────────────────────────────────────────────
 
@@ -16,6 +18,7 @@ class HardwareInfo:
     has_vaapi:    bool = False
     vaapi_device: str  = "/dev/dri/renderD128"
     has_nvenc:    bool = False
+    has_amf:      bool = False  # AMD Advanced Media Framework (Windows)
     has_qsv:      bool = False
     has_d3d11va:  bool = False  # Windows DirectX GPU acceleration
     cpu_threads:  int  = 4
@@ -30,12 +33,12 @@ class HardwareInfo:
 
     @property
     def has_any_gpu(self) -> bool:
-        return self.has_nvenc or self.has_vaapi or self.has_qsv or self.has_d3d11va
+        return self.has_nvenc or self.has_amf or self.has_vaapi or self.has_qsv
 
     @property
     def best_video_encoder(self) -> str:
         if self.has_nvenc:  return "nvenc"
-        if self.platform == "windows" and self.has_d3d11va:  return "d3d11va"
+        if self.has_amf:    return "amf"
         if self.has_vaapi:  return "vaapi"
         if self.has_qsv:    return "qsv"
         return "cpu"
@@ -44,6 +47,7 @@ class HardwareInfo:
     def hw_summary(self) -> str:
         parts = []
         if self.has_nvenc:  parts.append("NVIDIA NVENC")
+        if self.has_amf:    parts.append("AMD AMF")
         if self.has_d3d11va: parts.append("DirectX (D3D11VA)")
         if self.has_vaapi:  parts.append(f"VAAPI ({os.path.basename(self.vaapi_device)})")
         if self.has_qsv:    parts.append("Intel QSV")
@@ -54,7 +58,7 @@ class HardwareInfo:
     def encoder_list(self) -> list[str]:
         enc = []
         if self.has_nvenc:  enc += ["hevc_nvenc", "h264_nvenc"]
-        if self.has_d3d11va: enc += ["hevc_d3d11va", "h264_d3d11va"]
+        if self.has_amf:    enc += ["hevc_amf", "h264_amf"]
         if self.has_vaapi:  enc += ["hevc_vaapi", "h264_vaapi"]
         if self.has_qsv:    enc += ["hevc_qsv", "h264_qsv"]
         enc += ["libx265", "libx264"]
@@ -67,7 +71,8 @@ def _run(cmd: list[str], timeout: int = 15) -> tuple[int, str, str]:
     try:
         r = subprocess.run(
             cmd, capture_output=True, text=True,
-            timeout=timeout, env={**os.environ, "LANG": "C"}
+            timeout=timeout, env={**os.environ, "LANG": "C"},
+            **hidden_subprocess_kwargs()
         )
         return r.returncode, r.stdout, r.stderr
     except subprocess.TimeoutExpired:
@@ -91,13 +96,35 @@ def _test_encode(cmd: list[str], out_path: str) -> tuple[bool, str]:
     return rc == 0, stderr
 
 
+def _probe_encoder(info: HardwareInfo, label: str, encoders: list[str],
+                   extra_args: list[str] | None = None) -> tuple[bool, str | None]:
+    """Try one or more FFmpeg encoders and return the first working encoder."""
+    errors = []
+    for encoder in encoders:
+        tmp = os.path.join(tempfile.gettempdir(), f"_mc_{label.lower()}_{os.getpid()}.mp4")
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "testsrc=duration=0.1:size=256x144:rate=5",
+            "-c:v", encoder,
+        ]
+        if extra_args:
+            cmd += extra_args
+        cmd += ["-loglevel", "error", tmp]
+        ok, stderr = _test_encode(cmd, tmp)
+        if ok:
+            info.diag_log.append(f"{label}: OK ({encoder})")
+            return True, encoder
+        errors.append(f"{encoder}: {stderr.strip()[:100]}")
+    info.diag_log.append(f"{label}: FAIL - {' | '.join(errors)[:180]}")
+    return False, None
+
+
 # ── Encoder probes ────────────────────────────────────────────────────────────
 
 def _probe_vaapi(info: HardwareInfo) -> bool:
     if info.platform != "linux":
         return False
     devices = []
-    # Enumerate all render nodes
     dri_dir = "/dev/dri"
     if os.path.isdir(dri_dir):
         for name in sorted(os.listdir(dri_dir)):
@@ -109,7 +136,7 @@ def _probe_vaapi(info: HardwareInfo) -> bool:
         return False
 
     for dev in devices:
-        tmp = tempfile.gettempdir() / f"_mc_vaapi_{os.getpid()}.mp4" if hasattr(tempfile, 'gettempdir') else os.path.join(tempfile.gettempdir(), f"_mc_vaapi_{os.getpid()}.mp4")
+        tmp = os.path.join(tempfile.gettempdir(), f"_mc_vaapi_{os.getpid()}.mp4")
         ok, stderr = _test_encode([
             "ffmpeg", "-y",
             "-vaapi_device", dev,
@@ -117,8 +144,8 @@ def _probe_vaapi(info: HardwareInfo) -> bool:
             "-vf", "format=nv12,hwupload",
             "-c:v", "hevc_vaapi", "-qp", "30",
             "-loglevel", "error",
-            str(tmp),
-        ], str(tmp))
+            tmp,
+        ], tmp)
         if ok:
             info.diag_log.append(f"VAAPI: OK on {dev}")
             info.has_vaapi   = True
@@ -132,54 +159,42 @@ def _probe_vaapi(info: HardwareInfo) -> bool:
 
 
 def _probe_nvenc(info: HardwareInfo) -> bool:
-    tmp = os.path.join(tempfile.gettempdir(), f"_mc_nvenc_{os.getpid()}.mp4")
-    ok, stderr = _test_encode([
-        "ffmpeg", "-y",
-        "-f", "lavfi", "-i", "testsrc=duration=0.1:size=256x144:rate=5",
-        "-c:v", "hevc_nvenc", "-preset", "p1",
-        "-loglevel", "error",
-        tmp,
-    ], tmp)
+    ok, _ = _probe_encoder(info, "NVENC", ["hevc_nvenc", "h264_nvenc"], ["-preset", "p1"])
     if ok:
-        info.diag_log.append("NVENC: OK")
         info.has_nvenc = True
         return True
-    info.diag_log.append(f"NVENC: FAIL — {stderr.strip()[:120]}")
+    return False
+
+
+def _probe_amf(info: HardwareInfo) -> bool:
+    """Probe AMD AMF hardware encoding on Windows."""
+    if info.platform != "windows":
+        return False
+    ok, _ = _probe_encoder(info, "AMF", ["hevc_amf", "h264_amf"], ["-quality", "speed"])
+    if ok:
+        info.has_amf = True
+        return True
     return False
 
 
 def _probe_qsv(info: HardwareInfo) -> bool:
-    tmp = os.path.join(tempfile.gettempdir(), f"_mc_qsv_{os.getpid()}.mp4")
-    ok, stderr = _test_encode([
-        "ffmpeg", "-y",
-        "-f", "lavfi", "-i", "testsrc=duration=0.1:size=256x144:rate=5",
-        "-c:v", "hevc_qsv", "-loglevel", "error",
-        tmp,
-    ], tmp)
+    ok, _ = _probe_encoder(info, "QSV", ["hevc_qsv", "h264_qsv"])
     if ok:
-        info.diag_log.append("QSV: OK")
         info.has_qsv = True
         return True
-    info.diag_log.append(f"QSV: FAIL — {stderr.strip()[:120]}")
     return False
 
 
 def _probe_d3d11va(info: HardwareInfo) -> bool:
-    """Probe DirectX 11 Video Acceleration on Windows."""
+    """Detect DirectX 11 decode acceleration for diagnostics."""
     if info.platform != "windows":
         return False
-    tmp = os.path.join(tempfile.gettempdir(), f"_mc_d3d11va_{os.getpid()}.mp4")
-    ok, stderr = _test_encode([
-        "ffmpeg", "-y",
-        "-f", "lavfi", "-i", "testsrc=duration=0.1:size=256x144:rate=5",
-        "-c:v", "hevc_d3d11va", "-loglevel", "error",
-        tmp,
-    ], tmp)
-    if ok:
-        info.diag_log.append("D3D11VA: OK")
+    rc, out, _ = _run(["ffmpeg", "-hide_banner", "-hwaccels"], timeout=10)
+    if rc == 0 and "d3d11va" in out.lower():
+        info.diag_log.append("D3D11VA: OK (decode)")
         info.has_d3d11va = True
         return True
-    info.diag_log.append(f"D3D11VA: FAIL — {stderr.strip()[:120]}")
+    info.diag_log.append("D3D11VA: not listed by FFmpeg")
     return False
 
 
@@ -229,6 +244,18 @@ def _detect_gpu_name_linux(info: HardwareInfo):
 
 def _detect_gpu_name_windows(info: HardwareInfo):
     """Windows GPU detection via WMIC."""
+    rc, out, _ = _run([
+        "powershell", "-NoProfile", "-Command",
+        "Get-CimInstance Win32_VideoController | "
+        "Where-Object { $_.Name } | "
+        "ForEach-Object { $_.Name }"
+    ], timeout=10)
+    if rc == 0 and out.strip():
+        names = [line.strip() for line in out.splitlines() if line.strip()]
+        if names:
+            info.gpu_name = " + ".join(names)
+            return
+
     # Try WMIC first
     rc, out, _ = _run(["wmic", "path", "win32_VideoController", "get", "name"], timeout=10)
     if rc == 0:
@@ -269,6 +296,14 @@ def _detect_cpu_name_linux(info: HardwareInfo):
 
 def _detect_cpu_name_windows(info: HardwareInfo):
     """Windows CPU detection via WMIC."""
+    rc, out, _ = _run([
+        "powershell", "-NoProfile", "-Command",
+        "Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name"
+    ], timeout=10)
+    if rc == 0 and out.strip():
+        info.cpu_name = out.strip()
+        return
+
     rc, out, _ = _run(["wmic", "cpu", "get", "name"], timeout=10)
     if rc == 0:
         lines = [l.strip() for l in out.splitlines() if l.strip()]
@@ -301,6 +336,7 @@ def _load_cache() -> HardwareInfo | None:
             has_vaapi    = d.get("has_vaapi", False),
             vaapi_device = d.get("vaapi_device", "/dev/dri/renderD128"),
             has_nvenc    = d.get("has_nvenc", False),
+            has_amf      = d.get("has_amf", False),
             has_qsv      = d.get("has_qsv", False),
             has_d3d11va  = d.get("has_d3d11va", False),
             cpu_threads  = d.get("cpu_threads", os.cpu_count() or 4),
@@ -324,6 +360,7 @@ def _save_cache(info: HardwareInfo):
                 "has_vaapi":   info.has_vaapi,
                 "vaapi_device":info.vaapi_device,
                 "has_nvenc":   info.has_nvenc,
+                "has_amf":     info.has_amf,
                 "has_qsv":     info.has_qsv,
                 "has_d3d11va":  info.has_d3d11va,
                 "cpu_threads": info.cpu_threads,
@@ -360,6 +397,8 @@ def detect_hardware(force: bool = False) -> HardwareInfo:
         _probe_vaapi(info)
         _probe_qsv(info)
     elif info.platform == "windows":
+        _probe_amf(info)
+        _probe_qsv(info)
         _probe_d3d11va(info)
 
     info.diag_log.append(

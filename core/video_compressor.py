@@ -12,6 +12,7 @@ import tempfile
 
 from .task import CompressionTask, TaskStatus
 from .hardware import HardwareInfo
+from utils.process import hidden_subprocess_kwargs
 
 ProgressCB = Callable[[float], None]
 
@@ -22,7 +23,8 @@ def _get_duration(path: Path) -> float:
         r = subprocess.run(
             ["ffprobe", "-v", "quiet", "-print_format", "json",
              "-show_format", "-show_streams", str(path)],
-            capture_output=True, text=True, timeout=30
+            capture_output=True, text=True, timeout=30,
+            **hidden_subprocess_kwargs()
         )
         data = json.loads(r.stdout)
         dur = float(data.get("format", {}).get("duration", 0))
@@ -43,7 +45,8 @@ def _get_video_codec(path: Path) -> str:
         r = subprocess.run(
             ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
              "-show_entries", "stream=codec_name", "-of", "json", str(path)],
-            capture_output=True, text=True, timeout=15
+            capture_output=True, text=True, timeout=15,
+            **hidden_subprocess_kwargs()
         )
         d = json.loads(r.stdout)
         return d["streams"][0]["codec_name"] if d.get("streams") else "unknown"
@@ -84,6 +87,17 @@ def _build_cmd(src: Path, dst: Path, hw: HardwareInfo, settings: dict) -> tuple[
         cmd += audio_args + ["-movflags", "+faststart", "-loglevel", "error",
                               "-progress", "pipe:1", str(dst)]
         return cmd, f"NVENC ({enc})"
+
+    if use_hw and getattr(hw, "has_amf", False) and codec in ("h265", "h264"):
+        enc = "hevc_amf" if codec == "h265" else "h264_amf"
+        vf = ",".join(vf_filters) if vf_filters else None
+        cmd = ["ffmpeg", "-y", "-i", str(src)]
+        if vf:
+            cmd += ["-vf", vf]
+        cmd += ["-c:v", enc, "-quality", "speed", "-rc", "cqp", "-qp_i", str(quality), "-qp_p", str(quality)]
+        cmd += audio_args + ["-movflags", "+faststart", "-loglevel", "error",
+                              "-progress", "pipe:1", str(dst)]
+        return cmd, f"AMF ({enc})"
 
     if use_hw and hw.has_vaapi and codec in ("h265", "h264"):
         enc     = "hevc_vaapi" if codec == "h265" else "h264_vaapi"
@@ -133,7 +147,7 @@ def _run_ffmpeg(cmd: list, duration: float, progress_cb: ProgressCB,
     """
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, bufsize=1
+        text=True, bufsize=1, **hidden_subprocess_kwargs()
     )
     time_re = re.compile(r"out_time_ms=(\d+)")
     while proc.poll() is None:

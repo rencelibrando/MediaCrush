@@ -79,6 +79,7 @@ class _DiagRunner:
         from core.hardware import (
             detect_hardware, get_ffmpeg_version, list_ffmpeg_encoders
         )
+        from utils.process import hidden_subprocess_kwargs
         import subprocess, os
 
         results: dict = {}
@@ -90,7 +91,8 @@ class _DiagRunner:
         # FFprobe
         try:
             r = subprocess.run(
-                ["ffprobe", "-version"], capture_output=True, text=True, timeout=5
+                ["ffprobe", "-version"], capture_output=True, text=True, timeout=5,
+                **hidden_subprocess_kwargs()
             )
             v = r.stdout.splitlines()[0].replace("ffprobe version", "").strip().split()[0] \
                 if r.returncode == 0 else "not found"
@@ -109,6 +111,7 @@ class _DiagRunner:
         enc_check = [
             "hevc_vaapi", "h264_vaapi",
             "hevc_nvenc", "h264_nvenc",
+            "hevc_amf",   "h264_amf",
             "hevc_qsv",   "h264_qsv",
             "libx265",    "libx264",
             "libaom-av1",
@@ -198,6 +201,7 @@ class DiagnosticsDialog(QDialog):
         self._add_check("gpu_overall", "Any GPU encoder")
         self._add_check("vaapi",       "VAAPI (AMD/Intel)")
         self._add_check("nvenc",       "NVIDIA NVENC")
+        self._add_check("amf",         "AMD AMF")
         self._add_check("qsv",         "Intel Quick Sync")
 
         # ── Encoders section ──────────────────────────────────────────────────
@@ -205,6 +209,7 @@ class DiagnosticsDialog(QDialog):
         for enc in [
             "hevc_vaapi", "h264_vaapi",
             "hevc_nvenc", "h264_nvenc",
+            "hevc_amf",   "h264_amf",
             "hevc_qsv",   "h264_qsv",
             "libx265",    "libx264",
             "libaom-av1",
@@ -248,6 +253,7 @@ class DiagnosticsDialog(QDialog):
 
     def _run_diag(self, force: bool = False):
         self._force = force
+        self._runner._force = force
         self._status_lbl.setText("Running checks…")
         for dot, val in self._rows.values():
             color = "#334155"
@@ -282,6 +288,8 @@ class DiagnosticsDialog(QDialog):
                  hw.vaapi_device if hw.has_vaapi else "not available")
             _set("nvenc", hw.has_nvenc,
                  "Available" if hw.has_nvenc else "not available")
+            _set("amf", getattr(hw, "has_amf", False),
+                 "Available" if getattr(hw, "has_amf", False) else "not available")
             _set("qsv",   hw.has_qsv,
                  "Available" if hw.has_qsv   else "not available")
 
