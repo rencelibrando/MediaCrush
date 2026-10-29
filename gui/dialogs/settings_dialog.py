@@ -1,5 +1,6 @@
 """Settings and presets dialog."""
 from __future__ import annotations
+import os
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget,
     QLabel, QSlider, QSpinBox, QComboBox, QCheckBox,
@@ -125,29 +126,71 @@ class SettingsDialog(QDialog):
     def _make_engine_tab(self) -> QWidget:
         w = QWidget()
         lay = QFormLayout(w)
-        lay.setSpacing(14)
+        lay.setSpacing(12)
         lay.setContentsMargins(16, 16, 16, 16)
 
-        hw_lbl = QLabel(
-            self._hw.hw_summary if self._hw else "Not detected yet"
-        )
-        hw_lbl.setObjectName("hw_badge")
+        hw_summary = self._hw.hw_summary if self._hw else "Not detected yet"
+        threads = self._hw.cpu_threads if self._hw else (os.cpu_count() or 4)
+        self.hw_lbl = QLabel(f"{hw_summary}  |  {threads} CPU threads")
+        self.hw_lbl.setObjectName("hw_badge")
+
+        # Performance Mode Selector
+        self.perf_mode = QComboBox()
+        self.perf_mode.addItems([
+            "⚡ Maximum Performance (All CPU & GPU Cores)",
+            "⚖️ Balanced (Recommended)",
+            "🌱 Power Saver / Quiet",
+            "🛠️ Custom",
+        ])
+        self.perf_mode.currentIndexChanged.connect(self._on_perf_mode_changed)
 
         self.gpu_workers = QSpinBox()
         self.gpu_workers.setRange(0, 16)
+        self.gpu_workers.setToolTip("Parallel GPU encoding streams (VAAPI/NVENC/AMF/QSV)")
+        self.gpu_workers.valueChanged.connect(self._on_custom_tweak)
 
         self.cpu_workers = QSpinBox()
         self.cpu_workers.setRange(1, 64)
+        self.cpu_workers.setToolTip(f"Concurrent CPU compression tasks (Recommended: all {threads} cores)")
+        self.cpu_workers.valueChanged.connect(self._on_custom_tweak)
 
-        max_btn = QPushButton("Maximum Performance")
+        self.cpu_threads = QSpinBox()
+        self.cpu_threads.setRange(0, 64)
+        self.cpu_threads.setSpecialValueText("0 (All Cores / Auto)")
+        self.cpu_threads.setToolTip("FFmpeg CPU encoder threads per task. 0 allocates all available CPU cores.")
+        self.cpu_threads.valueChanged.connect(self._on_custom_tweak)
+
+        self.gpu_async = QSpinBox()
+        self.gpu_async.setRange(1, 8)
+        self.gpu_async.setToolTip("Hardware pipeline queue depth for GPU encoders (VAAPI)")
+        self.gpu_async.valueChanged.connect(self._on_custom_tweak)
+
+        self.hybrid_proc = QCheckBox("Engage both GPU and CPU simultaneously on task queue")
+        self.hybrid_proc.setToolTip("Distributes tasks to both GPU and CPU workers concurrently to maximize throughput")
+        self.hybrid_proc.toggled.connect(self._on_custom_tweak)
+
+        btn_box = QHBoxLayout()
+        max_btn = QPushButton("⚡ Maximize Performance Now")
         max_btn.setObjectName("btn_secondary")
-        max_btn.setToolTip("Set GPU=4, CPU=8 (all cores)")
+        max_btn.setToolTip("Configure all sliders to 100% capacity for GPU & CPU")
         max_btn.clicked.connect(self._set_max)
 
-        lay.addRow("Hardware:", hw_lbl)
+        reprobe_btn = QPushButton("🔄 Re-detect Hardware")
+        reprobe_btn.setObjectName("btn_secondary")
+        reprobe_btn.setToolTip("Re-probe GPU and CPU hardware encoders")
+        reprobe_btn.clicked.connect(self._reprobe_hw)
+
+        btn_box.addWidget(max_btn)
+        btn_box.addWidget(reprobe_btn)
+
+        lay.addRow("Hardware:", self.hw_lbl)
+        lay.addRow("Performance Mode:", self.perf_mode)
         lay.addRow("GPU workers:", self.gpu_workers)
         lay.addRow("CPU workers:", self.cpu_workers)
-        lay.addRow("", max_btn)
+        lay.addRow("CPU threads / task:", self.cpu_threads)
+        lay.addRow("GPU async depth:", self.gpu_async)
+        lay.addRow("", self.hybrid_proc)
+        lay.addRow("", btn_box)
 
         return w
 
@@ -186,9 +229,51 @@ class SettingsDialog(QDialog):
     def _on_out_mode(self, idx: int):
         self.out_dir.setEnabled(idx == 2)
 
+    def _on_perf_mode_changed(self, idx: int):
+        if getattr(self, "_updating_perf_mode", False):
+            return
+        self._updating_perf_mode = True
+        try:
+            threads = self._hw.cpu_threads if self._hw else (os.cpu_count() or 4)
+            if idx == 0:  # Maximum Performance
+                self.gpu_workers.setValue(4)
+                self.cpu_workers.setValue(threads)
+                self.cpu_threads.setValue(0)
+                self.gpu_async.setValue(4)
+                self.hybrid_proc.setChecked(True)
+            elif idx == 1:  # Balanced
+                self.gpu_workers.setValue(2)
+                self.cpu_workers.setValue(max(2, threads // 2))
+                self.cpu_threads.setValue(0)
+                self.gpu_async.setValue(2)
+                self.hybrid_proc.setChecked(True)
+            elif idx == 2:  # Power Saver
+                self.gpu_workers.setValue(1)
+                self.cpu_workers.setValue(2)
+                self.cpu_threads.setValue(2)
+                self.gpu_async.setValue(1)
+                self.hybrid_proc.setChecked(False)
+        finally:
+            self._updating_perf_mode = False
+
+    def _on_custom_tweak(self):
+        if getattr(self, "_updating_perf_mode", False):
+            return
+        self._updating_perf_mode = True
+        try:
+            self.perf_mode.setCurrentIndex(3)  # Custom
+        finally:
+            self._updating_perf_mode = False
+
     def _set_max(self):
-        self.gpu_workers.setValue(4)
-        self.cpu_workers.setValue(8)
+        self.perf_mode.setCurrentIndex(0)
+        self._on_perf_mode_changed(0)
+
+    def _reprobe_hw(self):
+        from core.hardware import detect_hardware
+        self._hw = detect_hardware(force=True)
+        threads = self._hw.cpu_threads or (os.cpu_count() or 4)
+        self.hw_lbl.setText(f"{self._hw.hw_summary}  |  {threads} CPU threads")
 
     def _browse_out(self):
         d = QFileDialog.getExistingDirectory(self, "Select output directory")
@@ -207,8 +292,32 @@ class SettingsDialog(QDialog):
         self.vid_fps.setCurrentText(self._s.get("video.fps", "original"))
         self.vid_skip_hevc.setChecked(self._s.get("video.skip_hevc", True))
 
+        perf_mode = self._s.get("engine.perf_mode", "max")
+        mode_indices = {"max": 0, "balanced": 1, "power_save": 2, "custom": 3}
+        self.perf_mode.blockSignals(True)
+        self.perf_mode.setCurrentIndex(mode_indices.get(perf_mode, 0))
+        self.perf_mode.blockSignals(False)
+
+        threads = self._hw.cpu_threads if self._hw else (os.cpu_count() or 4)
+        self.gpu_workers.blockSignals(True)
         self.gpu_workers.setValue(self._s.get("engine.gpu_workers", 4))
-        self.cpu_workers.setValue(self._s.get("engine.cpu_workers", 8))
+        self.gpu_workers.blockSignals(False)
+
+        self.cpu_workers.blockSignals(True)
+        self.cpu_workers.setValue(self._s.get("engine.cpu_workers", threads))
+        self.cpu_workers.blockSignals(False)
+
+        self.cpu_threads.blockSignals(True)
+        self.cpu_threads.setValue(self._s.get("engine.cpu_threads", 0))
+        self.cpu_threads.blockSignals(False)
+
+        self.gpu_async.blockSignals(True)
+        self.gpu_async.setValue(self._s.get("engine.gpu_async_depth", 4))
+        self.gpu_async.blockSignals(False)
+
+        self.hybrid_proc.blockSignals(True)
+        self.hybrid_proc.setChecked(self._s.get("engine.hybrid_distribution", True))
+        self.hybrid_proc.blockSignals(False)
 
         mode_map = {"inplace": 0, "alongside": 1, "custom": 2}
         self.out_mode.setCurrentIndex(
@@ -228,8 +337,13 @@ class SettingsDialog(QDialog):
         self._s.set("video.fps", self.vid_fps.currentText())
         self._s.set("video.skip_hevc", self.vid_skip_hevc.isChecked())
 
+        mode_keys = {0: "max", 1: "balanced", 2: "power_save", 3: "custom"}
+        self._s.set("engine.perf_mode", mode_keys.get(self.perf_mode.currentIndex(), "custom"))
         self._s.set("engine.gpu_workers", self.gpu_workers.value())
         self._s.set("engine.cpu_workers", self.cpu_workers.value())
+        self._s.set("engine.cpu_threads", self.cpu_threads.value())
+        self._s.set("engine.gpu_async_depth", self.gpu_async.value())
+        self._s.set("engine.hybrid_distribution", self.hybrid_proc.isChecked())
 
         mode_map = {0: "inplace", 1: "alongside", 2: "custom"}
         self._s.set("engine.output_mode", mode_map[self.out_mode.currentIndex()])

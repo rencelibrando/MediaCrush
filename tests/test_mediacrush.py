@@ -264,5 +264,65 @@ class TestMainWindowIntegration(unittest.TestCase):
         win.close()
 
 
+class TestPerformanceSettings(unittest.TestCase):
+    def test_settings_performance_defaults(self):
+        s = Settings()
+        cfg = s.compression_settings()
+        self.assertIn("perf_mode", cfg)
+        self.assertIn("gpu_workers", cfg)
+        self.assertIn("cpu_workers", cfg)
+        self.assertIn("cpu_threads", cfg)
+        self.assertIn("gpu_async_depth", cfg)
+        self.assertIn("hybrid_distribution", cfg)
+
+    def test_settings_dialog_perf_mode_switch(self):
+        from gui.dialogs.settings_dialog import SettingsDialog
+        from core.hardware import HardwareInfo
+        hw = HardwareInfo(has_vaapi=True, cpu_threads=8)
+        s = Settings()
+        dlg = SettingsDialog(s, hw_info=hw)
+        # Select Maximum Performance
+        dlg.perf_mode.setCurrentIndex(0)
+        self.assertEqual(dlg.gpu_workers.value(), 4)
+        self.assertEqual(dlg.cpu_workers.value(), 8)
+        self.assertEqual(dlg.cpu_threads.value(), 0)
+        self.assertEqual(dlg.gpu_async.value(), 4)
+        self.assertTrue(dlg.hybrid_proc.isChecked())
+
+        # Select Power Saver
+        dlg.perf_mode.setCurrentIndex(2)
+        self.assertEqual(dlg.gpu_workers.value(), 1)
+        self.assertEqual(dlg.cpu_workers.value(), 2)
+        self.assertEqual(dlg.cpu_threads.value(), 2)
+        self.assertEqual(dlg.gpu_async.value(), 1)
+        self.assertFalse(dlg.hybrid_proc.isChecked())
+        dlg.close()
+
+    def test_video_compressor_threads_and_async_depth(self):
+        from core.video_compressor import _build_cmd
+        from core.hardware import HardwareInfo
+        hw = HardwareInfo(has_vaapi=True, vaapi_device="/dev/dri/renderD128")
+        settings = {
+            "codec": "h265",
+            "quality": 28,
+            "use_hw": True,
+            "gpu_async_depth": 4,
+        }
+        cmd, label = _build_cmd(Path("/tmp/test.mp4"), Path("/tmp/out.mp4"), hw, settings)
+        self.assertIn("-async_depth", cmd)
+        self.assertIn("4", cmd)
+
+        # CPU fallback with custom threads
+        settings_cpu = {
+            "codec": "h265",
+            "quality": 28,
+            "use_hw": False,
+            "cpu_threads": 8,
+        }
+        cmd_cpu, label_cpu = _build_cmd(Path("/tmp/test.mp4"), Path("/tmp/out.mp4"), hw, settings_cpu)
+        self.assertIn("-threads", cmd_cpu)
+        self.assertIn("8", cmd_cpu)
+
+
 if __name__ == "__main__":
     unittest.main()

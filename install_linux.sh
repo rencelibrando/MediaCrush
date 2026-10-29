@@ -16,52 +16,80 @@ LAUNCHER="$BIN_DIR/mediacrush"
 DESKTOP_FILE="$DESKTOP_DIR/MediaCrush.desktop"
 APP_DESKTOP_FILE="$APPLICATIONS_DIR/mediacrush.desktop"
 
-echo "MediaCrush Linux installer"
+echo "MediaCrush Linux Installer"
 echo "Source:  $SOURCE_DIR"
 echo "Install: $APP_DIR"
 
-install_ffmpeg_if_missing() {
+install_system_dependencies() {
+  echo_step "[1/7] Checking and installing system dependencies (FFmpeg & codecs)"
+
+  # Check if FFmpeg with full codec support already exists
   if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
-    echo "FFmpeg found"
-    return
+    if ffmpeg -encoders 2>/dev/null | grep -qE "libx265|libx264"; then
+      echo "FFmpeg with full H.264/H.265 codec support is already installed."
+      return 0
+    fi
+    echo "Notice: Installed FFmpeg lacks libx264/libx265 encoders (common with Fedora ffmpeg-free)."
   fi
 
-  echo "FFmpeg was not found. Attempting platform package install..."
   if ! command -v sudo >/dev/null 2>&1; then
-    echo "sudo is not available. Install ffmpeg manually with your package manager." >&2
-    return
+    echo "Warning: sudo is not available. Please install FFmpeg and codecs manually." >&2
+    return 0
   fi
 
-  if command -v apt-get >/dev/null 2>&1; then
+  echo "Installing required system packages (may prompt for sudo password)..."
+
+  if command -v dnf >/dev/null 2>&1; then
+    echo "Fedora / RHEL detected (dnf)..."
+    # Enable RPM Fusion if missing for complete codec support
+    if ! dnf repolist 2>/dev/null | grep -q "rpmfusion-free"; then
+      echo "Enabling RPM Fusion repositories for complete video codec support..."
+      sudo dnf install -y \
+        https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm \
+        https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm || true
+    fi
+
+    # Replace ffmpeg-free with full ffmpeg (including libx264/libx265)
+    if rpm -q ffmpeg-free >/dev/null 2>&1; then
+      echo "Swapping ffmpeg-free with full ffmpeg (libx264/libx265)..."
+      sudo dnf swap -y ffmpeg-free ffmpeg --allowerasing || sudo dnf install -y ffmpeg ffmpeg-libs --allowerasing || true
+    else
+      echo "Installing full ffmpeg..."
+      sudo dnf install -y ffmpeg ffmpeg-libs --allowerasing 2>/dev/null || sudo dnf install -y ffmpeg || true
+    fi
+
+    # Install freeworld VAAPI drivers for AMD/Intel GPU hardware acceleration if applicable
+    if rpm -q mesa-va-drivers >/dev/null 2>&1 && ! rpm -q mesa-va-drivers-freeworld >/dev/null 2>&1; then
+      echo "Installing freeworld VAAPI drivers for GPU hardware acceleration..."
+      sudo dnf swap -y mesa-va-drivers mesa-va-drivers-freeworld --allowerasing 2>/dev/null || true
+    fi
+
+    # Ensure required runtime libraries are present
+    sudo dnf install -y python3-pip python3-devel libglvnd-glx libxkbcommon fontconfig 2>/dev/null || true
+
+  elif command -v apt-get >/dev/null 2>&1; then
+    echo "Debian / Ubuntu detected (apt)..."
     sudo apt-get update
-    sudo apt-get install -y ffmpeg
-  elif command -v dnf >/dev/null 2>&1; then
-    sudo dnf install -y ffmpeg 2>/dev/null || {
-      echo "Direct ffmpeg install via dnf failed." >&2
-      echo "On Fedora: enable RPM Fusion first:" >&2
-      echo "  sudo dnf install -y https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-\$(rpm -E %fedora).noarch.rpm" >&2
-      echo "  sudo dnf install -y ffmpeg" >&2
-      echo "On RHEL/CentOS: enable EPEL and RPM Fusion first:" >&2
-      echo "  sudo dnf install -y epel-release" >&2
-      echo "  sudo dnf install -y https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-\$(rpm -E %rhel).noarch.rpm" >&2
-      echo "  sudo dnf install -y ffmpeg" >&2
-    }
-  elif command -v yum >/dev/null 2>&1; then
-    sudo yum install -y epel-release || true
-    sudo yum install -y ffmpeg 2>/dev/null || {
-      echo "Direct ffmpeg install via yum failed." >&2
-      echo "Enable EPEL and RPM Fusion first, then run: sudo yum install -y ffmpeg" >&2
-    }
+    sudo apt-get install -y ffmpeg python3-venv python3-pip libgl1 libegl1 libxkbcommon-x11-0 libfontconfig1 || true
+
   elif command -v pacman >/dev/null 2>&1; then
-    sudo pacman -Sy --needed ffmpeg
+    echo "Arch Linux detected (pacman)..."
+    sudo pacman -Sy --needed --noconfirm ffmpeg python python-pip libglvnd libxkbcommon fontconfig || true
+
   elif command -v zypper >/dev/null 2>&1; then
-    sudo zypper install -y ffmpeg
+    echo "openSUSE detected (zypper)..."
+    sudo zypper install -y ffmpeg python3 python3-pip libglvnd libxkbcommon0 || true
+
   else
-    echo "No supported package manager found. Install ffmpeg manually." >&2
+    echo "No supported package manager found (dnf/apt/pacman/zypper). Please install ffmpeg manually." >&2
   fi
 }
 
-echo_step "[1/6] Checking Python"
+# Step 1: System packages & FFmpeg
+install_system_dependencies
+
+# Step 2: Check Python
+echo_step "[2/7] Checking Python version"
 if command -v python3 >/dev/null 2>&1; then
   PYTHON3="$(command -v python3)"
 else
@@ -75,8 +103,8 @@ if sys.version_info < (3, 8):
 PY
 echo "Python found: $PYTHON3"
 
-echo_step "[2/6] Copying application files"
-rm -rf "$APP_DIR"
+# Step 3: Copy app files
+echo_step "[3/7] Copying application files"
 mkdir -p "$APP_DIR"
 if command -v rsync >/dev/null 2>&1; then
   rsync -a \
@@ -88,6 +116,7 @@ if command -v rsync >/dev/null 2>&1; then
     --exclude '*.pyo' \
     "$SOURCE_DIR"/ "$APP_DIR"/
 else
+  find "$APP_DIR" -mindepth 1 -maxdepth 1 ! -name '.venv' -exec rm -rf {} +
   tar \
     --exclude='.git' \
     --exclude='.venv' \
@@ -99,43 +128,39 @@ else
 fi
 echo "Application copied to $APP_DIR"
 
-echo_step "[3/6] Creating local Python environment"
-if ! "$PYTHON3" -m venv "$VENV_DIR"; then
-  echo "Could not create a virtual environment." >&2
-  echo "Install the python3-venv package for your distribution." >&2
-  echo "  Debian/Ubuntu: sudo apt install python3-venv" >&2
-  echo "  Fedora/RHEL:   sudo dnf install python3" >&2
-  echo "  Arch:          sudo pacman -S python" >&2
-  echo "  openSUSE:      sudo zypper install python3-venv" >&2
-  exit 1
-fi
-echo "Virtual environment ready"
-
-echo_step "[4/7] Installing platform media tools"
-install_ffmpeg_if_missing
-
-echo_step "[5/7] Running app setup in install folder"
-(cd "$APP_DIR" && "$PYTHON_BIN" -c "import main; main.bootstrap(); print('MediaCrush setup complete')")
-
-if ! command -v ffmpeg >/dev/null 2>&1 && [ ! -x "$APP_DIR/.tools/ffmpeg/ffmpeg" ]; then
-  echo ""
-  echo "FFmpeg was not found. MediaCrush will still open, but video compression needs FFmpeg."
-  if command -v apt-get >/dev/null 2>&1; then
-    echo "Install it with: sudo apt-get install ffmpeg"
-  elif command -v dnf >/dev/null 2>&1; then
-    echo "Install it with: sudo dnf install ffmpeg"
-    echo "  (On Fedora, enable RPM Fusion first if needed.)"
-  elif command -v yum >/dev/null 2>&1; then
-    echo "Install it with: sudo yum install ffmpeg"
-    echo "  (Ensure EPEL and RPM Fusion are enabled.)"
-  elif command -v pacman >/dev/null 2>&1; then
-    echo "Install it with: sudo pacman -S ffmpeg"
-  else
-    echo "Install ffmpeg with your distribution's package manager."
+# Step 4: Virtual environment
+echo_step "[4/7] Ensuring local Python virtual environment"
+if [ ! -d "$VENV_DIR" ] || [ ! -x "$PYTHON_BIN" ]; then
+  if ! "$PYTHON3" -m venv "$VENV_DIR"; then
+    echo "Could not create a virtual environment." >&2
+    echo "Install the python3-venv package for your distribution." >&2
+    exit 1
   fi
+  echo "Created fresh virtual environment at $VENV_DIR"
+else
+  echo "Using existing virtual environment at $VENV_DIR"
 fi
 
-echo_step "[6/7] Creating launcher"
+# Step 5: Install Python dependencies
+echo_step "[5/7] Installing all required Python dependencies"
+echo "Upgrading pip, setuptools, and wheel..."
+"$PYTHON_BIN" -m pip install --upgrade pip setuptools wheel
+
+if [ -f "$APP_DIR/requirements.txt" ]; then
+  echo "Installing packages from requirements.txt..."
+  "$PYTHON_BIN" -m pip install -r "$APP_DIR/requirements.txt"
+else
+  echo "Installing default packages..."
+  "$PYTHON_BIN" -m pip install "PySide6>=6.5.0" "Pillow>=10.0.0" "pillow-heif>=0.13.0" "psutil>=5.9.0" "pynvml>=11.5.0" "pytest>=7.0.0"
+fi
+echo "Python dependencies installed successfully"
+
+# Step 6: Verify setup
+echo_step "[6/7] Verifying application setup"
+(cd "$APP_DIR" && "$PYTHON_BIN" -c "import main; main.bootstrap(); print('MediaCrush setup verified successfully')")
+
+# Step 7: Create launcher and desktop shortcuts
+echo_step "[7/7] Creating desktop launcher and shortcuts"
 mkdir -p "$BIN_DIR"
 cat > "$LAUNCHER" <<EOF
 #!/usr/bin/env bash
@@ -145,7 +170,6 @@ EOF
 chmod +x "$LAUNCHER"
 echo "Launcher created: $LAUNCHER"
 
-echo_step "[7/7] Creating desktop shortcut"
 mkdir -p "$DESKTOP_DIR" "$APPLICATIONS_DIR"
 cat > "$APP_DESKTOP_FILE" <<EOF
 [Desktop Entry]
@@ -165,6 +189,6 @@ if command -v update-desktop-database >/dev/null 2>&1; then
 fi
 
 echo ""
-echo "Installation complete."
-echo "Launch MediaCrush from the desktop shortcut, app menu, or run:"
+echo "Installation complete!"
+echo "You can launch MediaCrush from the desktop shortcut, application menu, or by running:"
 echo "  $LAUNCHER"

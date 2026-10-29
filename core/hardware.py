@@ -1,5 +1,6 @@
 """Hardware detection — GPU encoders, CPU info, live utilization."""
 from __future__ import annotations
+import functools
 import os
 import subprocess
 import tempfile
@@ -42,6 +43,21 @@ class HardwareInfo:
         return "cpu"
 
     @property
+    def clean_gpu_name(self) -> str:
+        if not self.gpu_name or self.gpu_name == "Unknown GPU":
+            return ""
+        name = self.gpu_name
+        if "Radeon" in name or "AMD" in name:
+            return "AMD Radeon Vega"
+        if "NVIDIA" in name or "GeForce" in name:
+            return "NVIDIA GPU"
+        if "Intel" in name:
+            return "Intel Graphics"
+        if "[" in name and "]" in name:
+            return name.split("[")[1].split("]")[0]
+        return name[:25]
+
+    @property
     def hw_summary(self) -> str:
         parts = []
         if self.has_nvenc:  parts.append("NVIDIA NVENC")
@@ -49,8 +65,11 @@ class HardwareInfo:
         if self.has_d3d11va: parts.append("DirectX (D3D11VA)")
         if self.has_vaapi:  parts.append(f"VAAPI ({os.path.basename(self.vaapi_device)})")
         if self.has_qsv:    parts.append("Intel QSV")
-        if not parts:       return "CPU only"
-        return " + ".join(parts)
+        if parts:
+            return " + ".join(parts)
+        if self.clean_gpu_name:
+            return f"CPU ({self.clean_gpu_name})"
+        return "CPU only"
 
     @property
     def encoder_list(self) -> list[str]:
@@ -132,25 +151,26 @@ def _probe_vaapi(info: HardwareInfo) -> bool:
         return False
 
     for dev in devices:
-        tmp = os.path.join(tempfile.gettempdir(), f"_mc_vaapi_{os.getpid()}.mp4")
-        ok, stderr = _test_encode([
-            "ffmpeg", "-y",
-            "-vaapi_device", dev,
-            "-f", "lavfi", "-i", "testsrc=duration=0.1:size=256x144:rate=5",
-            "-vf", "format=nv12,hwupload",
-            "-c:v", "hevc_vaapi", "-qp", "30",
-            "-loglevel", "error",
-            tmp,
-        ], tmp)
-        if ok:
-            info.diag_log.append(f"VAAPI: OK on {dev}")
-            info.has_vaapi   = True
-            info.vaapi_device = dev
-            return True
-        else:
-            info.diag_log.append(
-                f"VAAPI: FAIL on {dev} — {stderr.strip()[:120]}"
-            )
+        for enc in ("hevc_vaapi", "h264_vaapi"):
+            tmp = os.path.join(tempfile.gettempdir(), f"_mc_vaapi_{os.getpid()}.mp4")
+            ok, stderr = _test_encode([
+                "ffmpeg", "-y",
+                "-vaapi_device", dev,
+                "-f", "lavfi", "-i", "testsrc=duration=0.1:size=256x144:rate=5",
+                "-vf", "format=nv12,hwupload",
+                "-c:v", enc, "-qp", "30",
+                "-loglevel", "error",
+                tmp,
+            ], tmp)
+            if ok:
+                info.diag_log.append(f"VAAPI: OK ({enc}) on {dev}")
+                info.has_vaapi   = True
+                info.vaapi_device = dev
+                return True
+            else:
+                info.diag_log.append(
+                    f"VAAPI: FAIL ({enc}) on {dev} — {stderr.strip()[:100]}"
+                )
     return False
 
 
@@ -327,7 +347,12 @@ def _load_cache() -> HardwareInfo | None:
     try:
         with open(_CACHE_PATH) as f:
             d = json.load(f)
-        if time.time() - d.get("_ts", 0) > _CACHE_TTL:
+        age = time.time() - d.get("_ts", 0)
+        # If no GPU was detected, expire quickly (60s) so newly installed drivers
+        # (e.g. mesa-va-drivers-freeworld, nvidia) are picked up on next launch/run
+        has_gpu = d.get("has_vaapi") or d.get("has_nvenc") or d.get("has_amf") or d.get("has_qsv")
+        ttl = _CACHE_TTL if has_gpu else 60
+        if age > ttl:
             return None
         info = HardwareInfo(
             has_vaapi    = d.get("has_vaapi", False),
@@ -459,6 +484,7 @@ def get_ffmpeg_version() -> str:
     return "not found"
 
 
+@functools.lru_cache(maxsize=1)
 def list_ffmpeg_encoders() -> list[str]:
     rc, out, _ = _run(["ffmpeg", "-encoders", "-v", "quiet"], timeout=10)
     if rc != 0:

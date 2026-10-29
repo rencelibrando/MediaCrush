@@ -17,6 +17,17 @@ class AppLogger:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self._file = LOG_DIR / f"session_{stamp}.log"
         self._fh   = open(self._file, "w", buffering=1, encoding="utf-8")
+        try:
+            import platform, sys
+            header = (
+                f"# MediaCrush Session Log - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"# Platform: {platform.system()} {platform.release()} ({platform.machine()})\n"
+                f"# Python: {sys.version.split()[0]}\n"
+                f"# ------------------------------------------------------------\n"
+            )
+            self._fh.write(header)
+        except Exception:
+            pass
 
     def append(self, msg: str):
         self._lines.append(msg)

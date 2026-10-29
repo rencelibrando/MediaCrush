@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QSize, Slot, Signal, QTimer
 from PySide6.QtGui import QIcon
 
-from core.task import CompressionTask, IMAGE_EXTS, VIDEO_EXTS
+from core.task import CompressionTask, TaskStatus, IMAGE_EXTS, VIDEO_EXTS
 from core.engine import CompressionEngine
 from config.settings import Settings
 from utils.logger import get_logger
@@ -297,8 +297,10 @@ class MainWindow(QMainWindow):
 
     @Slot(str, str)
     def _on_task_error(self, task_id: str, msg: str):
-        self.queue_widget.set_status(task_id, "Error")
+        first_line = msg.splitlines()[0] if msg else "Failed"
+        self.queue_widget.set_status(task_id, "Error", encoder=first_line)
         self.stats.record_error()
+        self._update_overall()
 
     @Slot(str)
     def _on_log(self, msg: str):
@@ -317,9 +319,18 @@ class MainWindow(QMainWindow):
         self.btn_start.setEnabled(True)
         self.btn_pause.setEnabled(False)
         self.btn_cancel.setEnabled(False)
-        self.status_lbl.setText("All tasks completed")
-        self.overall_bar.setValue(100)
         self.stats.set_working(0)
+        self.overall_bar.setValue(100)
+
+        tasks = self._engine.get_tasks()
+        errors = sum(1 for t in tasks if t.status == TaskStatus.ERROR)
+        done = sum(1 for t in tasks if t.status == TaskStatus.DONE)
+        if errors and not done:
+            self.status_lbl.setText(f"Finished with {errors} error(s) — check Logs tab")
+        elif errors:
+            self.status_lbl.setText(f"Finished: {done} succeeded, {errors} error(s)")
+        else:
+            self.status_lbl.setText("All tasks completed successfully")
 
     @Slot(str)
     def _on_hw_detected(self, summary: str):

@@ -1,9 +1,17 @@
-# System prerequisite: FFmpeg + FFprobe (for video compression)
-#   Linux: install via your package manager (apt/dnf/yum/pacman/zypper)
-#   Windows: downloaded automatically by main.py on first run
+# MediaCrush Python Dependencies
+
+# GUI Framework
 PySide6>=6.5.0
+
+# Image processing & modern formats (HEIC/HEIF/AVIF)
 Pillow>=10.0.0
 pillow-heif>=0.13.0
+
+# System and resource monitoring
 psutil>=5.9.0
-# Optional: NVIDIA GPU monitoring (not required for basic usage)
-# nvidia-ml-py3>=7.352.0
+
+# NVIDIA GPU monitoring (optional hardware telemetry)
+pynvml>=11.5.0; platform_system != "Darwin"
+
+# Testing & quality assurance
+pytest>=7.0.0

@@ -153,8 +153,15 @@ class CompressionEngine:
             return
 
         n = len(pending)
-        gpu_workers = min(gpu_workers, n)
-        cpu_workers = min(cpu_workers, max(0, n - gpu_workers))
+        hybrid = self._settings.get("hybrid_distribution", True)
+        if hybrid and gpu_workers > 0 and cpu_workers > 0 and n > 1:
+            active_gpu = max(1, min(gpu_workers, (n + 1) // 2))
+            active_cpu = max(1, min(cpu_workers, n - active_gpu))
+            gpu_workers = active_gpu
+            cpu_workers = active_cpu
+        else:
+            gpu_workers = min(gpu_workers, n)
+            cpu_workers = min(cpu_workers, max(0, n - gpu_workers))
         total_workers = max(1, gpu_workers + cpu_workers)
 
         task_q: qmod.Queue[Optional[CompressionTask]] = qmod.Queue()
@@ -267,13 +274,21 @@ class CompressionEngine:
             elif task.status == TaskStatus.CANCELLED:
                 self._log(f"[CANCELLED] {task.path.name}")
             elif task.status == TaskStatus.ERROR:
-                self._log(f"[ERR] {task.path.name}: {task.error_msg}")
+                err_lines = [l.strip() for l in task.error_msg.splitlines() if l.strip()]
+                first_line = err_lines[0] if err_lines else "Unknown error"
+                self._log(f"[ERR] {task.path.name}: {first_line}")
+                for extra in err_lines[1:]:
+                    self._log(f"      {extra}")
                 self.signals.task_error.emit(task.id, task.error_msg)
 
         except Exception as e:
+            import traceback
+            tb_lines = traceback.format_exc().strip().splitlines()
             task.status = TaskStatus.ERROR
-            task.error_msg = str(e)
-            self._log(f"[ERR] Unexpected: {task.path.name}: {e}")
-            self.signals.task_error.emit(task.id, str(e))
+            task.error_msg = f"{type(e).__name__}: {e}"
+            self._log(f"[ERR] Unexpected error in {task.path.name}: {task.error_msg}")
+            for tb_l in tb_lines[-4:]:
+                self._log(f"      {tb_l.strip()}")
+            self.signals.task_error.emit(task.id, task.error_msg)
 
         self.signals.task_status.emit(task.id, task.status.value)

@@ -81,6 +81,13 @@ class TaskModel(QAbstractListModel):
         if role == _TASK_NEW:  return t["new"]
         if role == _TASK_PCT:  return t["pct"]
         if role == _TASK_ENC:  return t.get("enc", "")
+        if role == Qt.ToolTipRole:
+            if t["status"] == "Error":
+                err = t.get("enc", "")
+                return f"{t['name']}\nStatus: Error\nCause: {err}" if err else f"{t['name']} (Error)"
+            elif t["status"] == "Done":
+                return f"{t['name']}\nCompressed: {t.get('enc', '')}"
+            return t["name"]
         return None
 
     def add_task(self, task: CompressionTask):

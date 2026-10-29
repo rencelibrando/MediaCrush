@@ -10,7 +10,7 @@ import os
 import time
 
 from .task import CompressionTask, TaskStatus
-from .hardware import HardwareInfo
+from .hardware import HardwareInfo, list_ffmpeg_encoders
 from utils.process import hidden_subprocess_kwargs
 
 ProgressCB = Callable[[float], None]
@@ -101,9 +101,10 @@ def _build_cmd(src: Path, dst: Path, hw: HardwareInfo, settings: dict) -> tuple[
         hw_vf = ["format=nv12", "hwupload"]
         all_vf = vf_filters + hw_vf
         vf_str = ",".join(all_vf)
+        async_depth = int(settings.get("gpu_async_depth", 4))
         cmd = ["ffmpeg", "-y", "-vaapi_device", hw.vaapi_device,
                "-i", str(src), "-vf", vf_str,
-               "-c:v", enc, "-qp", str(quality)]
+               "-c:v", enc, "-async_depth", str(async_depth), "-qp", str(quality)]
         cmd += audio_args + ["-movflags", "+faststart", "-loglevel", "error",
                              "-progress", "pipe:1", str(dst)]
         return cmd, f"VAAPI ({enc})"
@@ -121,17 +122,46 @@ def _build_cmd(src: Path, dst: Path, hw: HardwareInfo, settings: dict) -> tuple[
 
     enc_map = {"h265": "libx265", "h264": "libx264", "av1": "libaom-av1"}
     enc = enc_map.get(codec, "libx265")
+
+    # Smart fallback based on available FFmpeg encoders
+    available = set(list_ffmpeg_encoders())
+    fallback_note = ""
+    if codec == "h265" and "libx265" not in available:
+        if "libsvtav1" in available:
+            enc = "libsvtav1"
+            fallback_note = " (h265 fallback -> SVT-AV1)"
+        elif "libopenh264" in available:
+            enc = "libopenh264"
+            fallback_note = " (h265 fallback -> OpenH264)"
+    elif codec == "av1":
+        if "libsvtav1" in available:
+            enc = "libsvtav1"
+    elif codec == "h264":
+        if "libx264" not in available and "libopenh264" in available:
+            enc = "libopenh264"
+            fallback_note = " (h264 fallback -> OpenH264)"
+
     vf = ",".join(vf_filters) if vf_filters else None
     cmd = ["ffmpeg", "-y", "-i", str(src)]
     if vf:
         cmd += ["-vf", vf]
-    cmd += ["-c:v", enc, "-crf", str(quality), "-preset", "fast", "-threads", "1"]
-    if codec == "av1":
-        cmd = [c for c in cmd if c not in ("-preset", "fast", "-threads", "1")]
-        cmd += ["-cpu-used", "4"]
+
+    # CPU thread allocation: 0 lets FFmpeg automatically allocate all available CPU cores
+    cpu_threads = int(settings.get("cpu_threads", 0))
+    threads_arg = ["-threads", str(cpu_threads)]
+
+    if enc == "libsvtav1":
+        cmd += ["-c:v", enc, "-crf", str(quality), "-preset", "8"] + threads_arg
+    elif enc == "libopenh264":
+        cmd += ["-c:v", enc, "-b:v", "2M"] + threads_arg
+    elif codec == "av1":
+        cmd += ["-c:v", enc, "-crf", str(quality), "-cpu-used", "4"] + threads_arg
+    else:
+        cmd += ["-c:v", enc, "-crf", str(quality), "-preset", "fast"] + threads_arg
+
     cmd += audio_args + ["-movflags", "+faststart", "-loglevel", "error",
                          "-progress", "pipe:1", str(dst)]
-    return cmd, f"CPU ({enc})"
+    return cmd, f"CPU ({enc}{fallback_note})"
 
 
 def _run_ffmpeg(cmd: list, duration: float, progress_cb: ProgressCB,
@@ -150,15 +180,15 @@ def _run_ffmpeg(cmd: list, duration: float, progress_cb: ProgressCB,
         **hidden_subprocess_kwargs()
     )
 
-    stderr_chunks: list[str] = []
+    from collections import deque
+    stderr_chunks: deque[str] = deque(maxlen=100)
 
     def _drain_stderr():
         try:
             if proc.stderr:
                 for line in iter(proc.stderr.readline, ""):
                     if line:
-                        if len(stderr_chunks) < 20:
-                            stderr_chunks.append(line)
+                        stderr_chunks.append(line)
         except Exception:
             pass
 
@@ -285,7 +315,22 @@ def compress_video(task: CompressionTask, settings: dict,
                 return
 
         if rc != 0 or not tmp_path.exists():
-            raise RuntimeError(f"ffmpeg failed: {err_out[:200]}")
+            if "Unknown encoder" in err_out:
+                codec_name = settings.get("codec", "video")
+                raise RuntimeError(
+                    f"FFmpeg lacks '{codec_name}' encoder. On Fedora Linux, install full FFmpeg from RPM Fusion: "
+                    "'sudo dnf swap ffmpeg-free ffmpeg --allowerasing' or select AV1 in Settings."
+                )
+
+            err_lines = [l.strip() for l in err_out.splitlines() if l.strip()]
+            meaningful = [
+                l for l in err_lines
+                if any(k in l.lower() for k in ("error", "invalid", "failed", "cannot", "unknown", "denied", "no such", "not found", "abort"))
+            ]
+            if not meaningful:
+                meaningful = err_lines[-6:] if err_lines else [f"FFmpeg exited with code {rc}"]
+            detail = "\n".join(meaningful[-6:])
+            raise RuntimeError(f"FFmpeg encoding failed (exit code {rc}):\n{detail}")
 
         new_size = tmp_path.stat().st_size
         should_replace = (new_size < task.orig_size) or (task.orig_size == 0)

@@ -100,6 +100,7 @@ class _DiagRunner:
             "hevc_amf",   "h264_amf",
             "hevc_qsv",   "h264_qsv",
             "libx265",    "libx264",
+            "libsvtav1",  "libopenh264",
             "libaom-av1",
         ]
         results["encoders"] = {e: (e in all_enc) for e in enc_check}
@@ -174,8 +175,9 @@ class DiagnosticsDialog(QDialog):
         self._add_check("ffprobe", "FFprobe")
         self._add_check("psutil", "psutil (monitoring)")
 
-        self._body_lay.addWidget(_section_title("GPU ACCELERATION"))
-        self._add_check("gpu_overall", "Any GPU encoder")
+        self._body_lay.addWidget(_section_title("GPU & ACCELERATION"))
+        self._add_check("gpu_device", "GPU Hardware")
+        self._add_check("gpu_overall", "Active HW encoder")
         self._add_check("vaapi", "VAAPI (AMD/Intel)")
         self._add_check("nvenc", "NVIDIA NVENC")
         self._add_check("amf", "AMD AMF")
@@ -188,6 +190,7 @@ class DiagnosticsDialog(QDialog):
             "hevc_amf",   "h264_amf",
             "hevc_qsv",   "h264_qsv",
             "libx265",    "libx264",
+            "libsvtav1",  "libopenh264",
             "libaom-av1",
         ]:
             self._add_check(f"enc_{enc}", enc)
@@ -246,8 +249,16 @@ class DiagnosticsDialog(QDialog):
         _set("psutil", r.get("psutil_ok", False), r.get("psutil_version", "N/A"))
 
         if hw:
+            gpu_detected = bool(hw.gpu_name and hw.gpu_name != "Unknown GPU")
+            _set("gpu_device", gpu_detected, hw.gpu_name if gpu_detected else "No GPU detected")
             _set("gpu_overall", hw.has_any_gpu, hw.hw_summary)
-            _set("vaapi", hw.has_vaapi, hw.vaapi_device if hw.has_vaapi else "not available")
+            if hw.has_vaapi:
+                vaapi_msg = f"Available ({hw.vaapi_device})"
+            elif hw.platform == "linux" and ("AMD" in hw.gpu_name or "Radeon" in hw.gpu_name):
+                vaapi_msg = "Disabled (install mesa-va-drivers-freeworld)"
+            else:
+                vaapi_msg = "not available"
+            _set("vaapi", hw.has_vaapi, vaapi_msg)
             _set("nvenc", hw.has_nvenc, "Available" if hw.has_nvenc else "not available")
             _set("amf", getattr(hw, "has_amf", False), "Available" if getattr(hw, "has_amf", False) else "not available")
             _set("qsv", hw.has_qsv, "Available" if hw.has_qsv else "not available")

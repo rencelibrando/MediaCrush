@@ -142,7 +142,7 @@ def compress_image(task: CompressionTask, settings: dict,
 
     except Exception as e:
         task.status = TaskStatus.ERROR
-        task.error_msg = str(e)
+        task.error_msg = f"{type(e).__name__}: {e}"
         progress_cb(100.0)
     finally:
         tmp_path.unlink(missing_ok=True)

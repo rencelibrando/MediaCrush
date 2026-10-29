@@ -15,11 +15,13 @@ else:
 def _get_default_workers() -> dict:
     """Auto-detect optimal worker counts based on hardware."""
     cpu_count = os.cpu_count() or 4
-    # For GPU: use 1-2 workers typically (GPU encoders are parallel internally)
-    # For CPU: use all available threads for maximum performance
     return {
-        "gpu_workers": min(2, cpu_count // 2),  # Conservative GPU workers
-        "cpu_workers": cpu_count,  # Max CPU workers
+        "perf_mode": "max",  # max | balanced | power_save | custom
+        "gpu_workers": 4,    # Parallel GPU hardware streams
+        "cpu_workers": cpu_count,  # Full CPU cores/threads
+        "cpu_threads": 0,    # 0 = allocate all CPU cores per task in FFmpeg
+        "gpu_async_depth": 4, # VAAPI hardware pipeline parallelism
+        "hybrid_distribution": True, # Engage both GPU and CPU simultaneously
     }
 
 DEFAULTS: dict = {
@@ -107,6 +109,12 @@ class Settings:
         s["resolution"]      = vid.get("resolution", "original")
         s["fps"]             = vid.get("fps", "original")
         s["skip_hevc"]       = vid.get("skip_hevc", True)
+        s["perf_mode"]       = eng.get("perf_mode", "max")
+        s["gpu_workers"]     = eng.get("gpu_workers", 4)
+        s["cpu_workers"]     = eng.get("cpu_workers", os.cpu_count() or 4)
+        s["cpu_threads"]     = eng.get("cpu_threads", 0)
+        s["gpu_async_depth"] = eng.get("gpu_async_depth", 4)
+        s["hybrid_distribution"] = eng.get("hybrid_distribution", True)
         return s
 
 

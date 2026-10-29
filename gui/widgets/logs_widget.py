@@ -35,7 +35,7 @@ def _classify(msg: str) -> str:
     ml = msg.lower()
     if "[ok]" in ml or "done" in ml or "completed" in ml:
         return "ok"
-    if "[err]" in ml or "error" in ml or "failed" in ml:
+    if "[err]" in ml or "error" in ml or "failed" in ml or "exception" in ml or "traceback" in ml or "lacks" in ml:
         return "error"
     if "[skip]" in ml or "skipped" in ml or "skip" in ml:
         return "skip"
@@ -53,7 +53,7 @@ def _classify(msg: str) -> str:
 def _to_html(msg: str, theme: str = "dark") -> str:
     palette = _HTML_COLORS_DARK if theme == "dark" else _HTML_COLORS_LIGHT
     color = palette.get(_classify(msg), palette["info"])
-    safe = msg.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    safe = msg.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("  ", "&nbsp;&nbsp;")
     return f'<span style="color:{color};">{safe}</span>'
 
 

@@ -131,7 +131,12 @@ def main() -> None:
     from gui.main_window import MainWindow
     from gui.styles import get_style
 
+    # Suppress verbose QtWayland text-input protocol debug warnings on Linux/Wayland
+    os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.wayland*=false")
     os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "1")
+
+    from PySide6.QtCore import QLoggingCategory
+    QLoggingCategory.setFilterRules("qt.qpa.wayland*=false")
 
     app = QApplication(sys.argv)
     app.setApplicationName("MediaCrush")
