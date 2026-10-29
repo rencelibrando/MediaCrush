@@ -1,4 +1,4 @@
-"""Video compression using FFmpeg with GPU + CPU fallback."""
+"""Video compression using FFmpeg with GPU and CPU fallback, safe pipes, and responsive cancellation."""
 from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Optional
@@ -8,7 +8,6 @@ import json
 import re
 import os
 import time
-import tempfile
 
 from .task import CompressionTask, TaskStatus
 from .hardware import HardwareInfo
@@ -18,7 +17,6 @@ ProgressCB = Callable[[float], None]
 
 
 def _get_duration(path: Path) -> float:
-    """Return video duration in seconds via ffprobe."""
     try:
         r = subprocess.run(
             ["ffprobe", "-v", "quiet", "-print_format", "json",
@@ -55,12 +53,11 @@ def _get_video_codec(path: Path) -> str:
 
 
 def _build_cmd(src: Path, dst: Path, hw: HardwareInfo, settings: dict) -> tuple[list[str], str]:
-    """Build ffmpeg command. Returns (cmd, encoder_label)."""
-    codec       = settings.get("codec", "h265")
-    quality     = int(settings.get("video_quality", settings.get("quality", 28)))
-    resolution  = settings.get("resolution", "original")
-    fps         = settings.get("fps", "original")
-    use_hw      = settings.get("use_hw", True)
+    codec = settings.get("codec", "h265")
+    quality = int(settings.get("video_quality", settings.get("quality", 28)))
+    resolution = settings.get("resolution", "original")
+    fps = settings.get("fps", "original")
+    use_hw = settings.get("use_hw", True)
 
     vf_filters = []
     if resolution != "original":
@@ -76,7 +73,6 @@ def _build_cmd(src: Path, dst: Path, hw: HardwareInfo, settings: dict) -> tuple[
 
     audio_args = ["-c:a", "aac", "-b:a", "128k"]
 
-    # --- GPU path ---
     if use_hw and hw.has_nvenc and codec in ("h265", "h264"):
         enc = "hevc_nvenc" if codec == "h265" else "h264_nvenc"
         vf = ",".join(vf_filters) if vf_filters else None
@@ -85,7 +81,7 @@ def _build_cmd(src: Path, dst: Path, hw: HardwareInfo, settings: dict) -> tuple[
             cmd += ["-vf", vf]
         cmd += ["-c:v", enc, "-cq", str(quality), "-preset", "p4"]
         cmd += audio_args + ["-movflags", "+faststart", "-loglevel", "error",
-                              "-progress", "pipe:1", str(dst)]
+                             "-progress", "pipe:1", str(dst)]
         return cmd, f"NVENC ({enc})"
 
     if use_hw and getattr(hw, "has_amf", False) and codec in ("h265", "h264"):
@@ -94,21 +90,22 @@ def _build_cmd(src: Path, dst: Path, hw: HardwareInfo, settings: dict) -> tuple[
         cmd = ["ffmpeg", "-y", "-i", str(src)]
         if vf:
             cmd += ["-vf", vf]
-        cmd += ["-c:v", enc, "-quality", "speed", "-rc", "cqp", "-qp_i", str(quality), "-qp_p", str(quality)]
+        cmd += ["-c:v", enc, "-quality", "speed", "-rc", "cqp",
+                "-qp_i", str(quality), "-qp_p", str(quality)]
         cmd += audio_args + ["-movflags", "+faststart", "-loglevel", "error",
-                              "-progress", "pipe:1", str(dst)]
+                             "-progress", "pipe:1", str(dst)]
         return cmd, f"AMF ({enc})"
 
     if use_hw and hw.has_vaapi and codec in ("h265", "h264"):
-        enc     = "hevc_vaapi" if codec == "h265" else "h264_vaapi"
-        hw_vf   = ["format=nv12", "hwupload"]
-        all_vf  = vf_filters + hw_vf
-        vf_str  = ",".join(all_vf)
+        enc = "hevc_vaapi" if codec == "h265" else "h264_vaapi"
+        hw_vf = ["format=nv12", "hwupload"]
+        all_vf = vf_filters + hw_vf
+        vf_str = ",".join(all_vf)
         cmd = ["ffmpeg", "-y", "-vaapi_device", hw.vaapi_device,
                "-i", str(src), "-vf", vf_str,
                "-c:v", enc, "-qp", str(quality)]
         cmd += audio_args + ["-movflags", "+faststart", "-loglevel", "error",
-                              "-progress", "pipe:1", str(dst)]
+                             "-progress", "pipe:1", str(dst)]
         return cmd, f"VAAPI ({enc})"
 
     if use_hw and hw.has_qsv and codec in ("h265", "h264"):
@@ -119,18 +116,16 @@ def _build_cmd(src: Path, dst: Path, hw: HardwareInfo, settings: dict) -> tuple[
             cmd += ["-vf", vf]
         cmd += ["-c:v", enc, "-global_quality", str(quality)]
         cmd += audio_args + ["-movflags", "+faststart", "-loglevel", "error",
-                              "-progress", "pipe:1", str(dst)]
+                             "-progress", "pipe:1", str(dst)]
         return cmd, f"QSV ({enc})"
 
-    # --- CPU path ---
     enc_map = {"h265": "libx265", "h264": "libx264", "av1": "libaom-av1"}
     enc = enc_map.get(codec, "libx265")
     vf = ",".join(vf_filters) if vf_filters else None
     cmd = ["ffmpeg", "-y", "-i", str(src)]
     if vf:
         cmd += ["-vf", vf]
-    cmd += ["-c:v", enc, "-crf", str(quality), "-preset", "fast",
-            "-threads", "1"]
+    cmd += ["-c:v", enc, "-crf", str(quality), "-preset", "fast", "-threads", "1"]
     if codec == "av1":
         cmd = [c for c in cmd if c not in ("-preset", "fast", "-threads", "1")]
         cmd += ["-cpu-used", "4"]
@@ -140,54 +135,104 @@ def _build_cmd(src: Path, dst: Path, hw: HardwareInfo, settings: dict) -> tuple[
 
 
 def _run_ffmpeg(cmd: list, duration: float, progress_cb: ProgressCB,
-                cancel_event: threading.Event, base_pct: float = 5.0) -> subprocess.Popen:
+                cancel_event: threading.Event, base_pct: float = 5.0) -> tuple[int, str]:
     """
-    Run an ffmpeg command, updating progress and terminating immediately
-    if cancel_event fires. Returns the finished Popen object.
+    Run an ffmpeg command without pipe buffer deadlocks.
+    Reads progress from stdout and error output from stderr concurrently.
+    Periodically checks cancel_event to guarantee prompt cancellation.
     """
     proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, bufsize=1, **hidden_subprocess_kwargs()
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        **hidden_subprocess_kwargs()
     )
+
+    stderr_chunks: list[str] = []
+
+    def _drain_stderr():
+        try:
+            if proc.stderr:
+                for line in iter(proc.stderr.readline, ""):
+                    if line:
+                        if len(stderr_chunks) < 20:
+                            stderr_chunks.append(line)
+        except Exception:
+            pass
+
+    stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+    stderr_thread.start()
+
     time_re = re.compile(r"out_time_ms=(\d+)")
-    while proc.poll() is None:
-        if cancel_event.is_set():
-            proc.terminate()
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-            return proc
-        line = proc.stdout.readline()
-        if not line:
-            continue
-        m = time_re.search(line)
-        if m and duration > 0:
-            current_s = int(m.group(1)) / 1_000_000
-            pct = min(98.0, base_pct + (current_s / duration) * (98.0 - base_pct))
-            progress_cb(pct)
-    proc.wait()
-    return proc
+
+    def _drain_stdout():
+        try:
+            if proc.stdout:
+                for line in iter(proc.stdout.readline, ""):
+                    if not line:
+                        break
+                    m = time_re.search(line)
+                    if m and duration > 0:
+                        current_s = int(m.group(1)) / 1_000_000
+                        pct = min(98.0, base_pct + (current_s / duration) * (98.0 - base_pct))
+                        progress_cb(pct)
+        except Exception:
+            pass
+
+    stdout_thread = threading.Thread(target=_drain_stdout, daemon=True)
+    stdout_thread.start()
+
+    try:
+        while proc.poll() is None:
+            if cancel_event.is_set():
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                break
+            time.sleep(0.08)
+
+        proc.wait()
+    finally:
+        try:
+            if proc.stdout:
+                proc.stdout.close()
+        except Exception:
+            pass
+        try:
+            if proc.stderr:
+                proc.stderr.close()
+        except Exception:
+            pass
+
+    stdout_thread.join(timeout=1.0)
+    stderr_thread.join(timeout=1.0)
+
+    err_msg = "".join(stderr_chunks).strip()
+    return proc.returncode, err_msg
 
 
 def compress_video(task: CompressionTask, settings: dict,
                    hw: HardwareInfo, progress_cb: ProgressCB,
                    cancel_event: Optional[threading.Event] = None) -> None:
-    _cancel = cancel_event or threading.Event()  # no-op event if not provided
+    _cancel = cancel_event or threading.Event()
 
     def _cancelled() -> bool:
         return _cancel.is_set()
 
+    src = task.path
+    dst = task.output_path
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = dst.parent / f".tmp_mc_{task.id}_{src.stem}.mp4"
+
     try:
-        task.status     = TaskStatus.RUNNING
+        task.status = TaskStatus.RUNNING
         task.start_time = time.time()
         progress_cb(2.0)
 
-        src = task.path
-        dst = task.output_path
-        dst.parent.mkdir(parents=True, exist_ok=True)
-
-        # Re-read orig_size if it wasn't captured at task creation
         if task.orig_size == 0 and src.exists():
             task.orig_size = src.stat().st_size
 
@@ -196,12 +241,11 @@ def compress_video(task: CompressionTask, settings: dict,
             progress_cb(100.0)
             return
 
-        # Skip if already HEVC and user wants to skip
         if settings.get("skip_hevc", True):
             codec = _get_video_codec(src)
             if codec in ("hevc", "h265", "av1"):
-                task.status       = TaskStatus.SKIPPED
-                task.new_size     = task.orig_size
+                task.status = TaskStatus.SKIPPED
+                task.new_size = task.orig_size
                 task.encoder_used = f"Skipped (already {codec})"
                 progress_cb(100.0)
                 return
@@ -214,38 +258,34 @@ def compress_video(task: CompressionTask, settings: dict,
         duration = _get_duration(src)
         progress_cb(5.0)
 
-        tmp_path = src.with_suffix(".tmp_mc.mp4")
         cmd, label = _build_cmd(src, tmp_path, hw, settings)
-
-        proc = _run_ffmpeg(cmd, duration, progress_cb, _cancel, base_pct=5.0)
+        rc, err_out = _run_ffmpeg(cmd, duration, progress_cb, _cancel, base_pct=5.0)
 
         if _cancelled():
-            tmp_path.unlink(missing_ok=True)
             task.status = TaskStatus.CANCELLED
             progress_cb(100.0)
             return
 
-        # GPU encode failed → retry with CPU
-        if proc.returncode != 0 and settings.get("use_hw", True):
+        # Fallback to CPU encode if hardware acceleration failed
+        if rc != 0 and settings.get("use_hw", True):
             tmp_path.unlink(missing_ok=True)
             if _cancelled():
                 task.status = TaskStatus.CANCELLED
                 progress_cb(100.0)
                 return
+
             cpu_settings = {**settings, "use_hw": False}
             cmd_cpu, label = _build_cmd(src, tmp_path, hw, cpu_settings)
-            label = "CPU↩ (GPU failed)"
-            proc = _run_ffmpeg(cmd_cpu, duration, progress_cb, _cancel, base_pct=5.0)
+            label = "CPU (GPU fallback)"
+            rc, err_out = _run_ffmpeg(cmd_cpu, duration, progress_cb, _cancel, base_pct=5.0)
 
             if _cancelled():
-                tmp_path.unlink(missing_ok=True)
                 task.status = TaskStatus.CANCELLED
                 progress_cb(100.0)
                 return
 
-        if proc.returncode != 0 or not tmp_path.exists():
-            stderr = proc.stderr.read() if proc.stderr else ""
-            raise RuntimeError(f"ffmpeg failed: {stderr[:200]}")
+        if rc != 0 or not tmp_path.exists():
+            raise RuntimeError(f"ffmpeg failed: {err_out[:200]}")
 
         new_size = tmp_path.stat().st_size
         should_replace = (new_size < task.orig_size) or (task.orig_size == 0)
@@ -256,20 +296,17 @@ def compress_video(task: CompressionTask, settings: dict,
             shutil.move(str(tmp_path), str(dst))
         else:
             tmp_path.unlink(missing_ok=True)
-            new_size = task.orig_size  # no benefit
+            new_size = task.orig_size
 
-        task.new_size     = new_size
+        task.new_size = new_size
         task.encoder_used = label
-        task.status       = TaskStatus.DONE
+        task.status = TaskStatus.DONE
         progress_cb(100.0)
 
     except Exception as e:
-        task.status    = TaskStatus.ERROR
+        task.status = TaskStatus.ERROR
         task.error_msg = str(e)
-        try:
-            src.with_suffix(".tmp_mc.mp4").unlink(missing_ok=True)
-        except Exception:
-            pass
         progress_cb(100.0)
     finally:
+        tmp_path.unlink(missing_ok=True)
         task.end_time = time.time()

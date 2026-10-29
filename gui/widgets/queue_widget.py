@@ -1,8 +1,7 @@
 """Queue widget with model/view for efficient large-queue rendering."""
 from __future__ import annotations
 from PySide6.QtWidgets import (
-    QListView, QStyledItemDelegate, QSizePolicy, QWidget, QVBoxLayout,
-    QStyle,
+    QListView, QStyledItemDelegate, QWidget, QVBoxLayout, QStyle,
 )
 from PySide6.QtCore import Qt, Signal, QSize, QRect, QAbstractListModel, QModelIndex
 from PySide6.QtGui import (
@@ -12,31 +11,50 @@ from PySide6.QtGui import (
 from core.task import CompressionTask
 
 
-STATUS_COLORS = {
-    "Queued":    "#475569",
+STATUS_COLORS_DARK = {
+    "Queued":    "#a1a1aa",
     "Running":   "#38bdf8",
     "Done":      "#10b981",
-    "Error":     "#f87171",
-    "Skipped":   "#14b8a6",
-    "Cancelled": "#64748b",
-    "Paused":    "#a78bfa",
+    "Error":     "#ef4444",
+    "Skipped":   "#f59e0b",
+    "Cancelled": "#71717a",
+    "Paused":    "#a1a1aa",
 }
 
-STATUS_DOT = {
-    "Queued":    "#334155",
+STATUS_COLORS_LIGHT = {
+    "Queued":    "#64748b",
+    "Running":   "#0284c7",
+    "Done":      "#059669",
+    "Error":     "#dc2626",
+    "Skipped":   "#d97706",
+    "Cancelled": "#94a3b8",
+    "Paused":    "#64748b",
+}
+
+STATUS_DOT_DARK = {
+    "Queued":    "#52525b",
     "Running":   "#38bdf8",
     "Done":      "#10b981",
-    "Error":     "#f87171",
-    "Skipped":   "#14b8a6",
-    "Cancelled": "#475569",
-    "Paused":    "#a78bfa",
+    "Error":     "#ef4444",
+    "Skipped":   "#f59e0b",
+    "Cancelled": "#52525b",
+    "Paused":    "#a1a1aa",
 }
 
-# ── Model roles ──────────────────────────────────────────────────────────────
+STATUS_DOT_LIGHT = {
+    "Queued":    "#94a3b8",
+    "Running":   "#0284c7",
+    "Done":      "#059669",
+    "Error":     "#dc2626",
+    "Skipped":   "#d97706",
+    "Cancelled": "#cbd5e1",
+    "Paused":    "#64748b",
+}
+
 _TASK_ID   = Qt.UserRole + 1
 _TASK_NAME = Qt.UserRole + 2
 _TASK_TYPE = Qt.UserRole + 3
-_TASK_ST   = Qt.UserRole + 4  # status string
+_TASK_ST   = Qt.UserRole + 4
 _TASK_ORIG = Qt.UserRole + 5
 _TASK_NEW  = Qt.UserRole + 6
 _TASK_PCT  = Qt.UserRole + 7
@@ -79,6 +97,25 @@ class TaskModel(QAbstractListModel):
         })
         self.endInsertRows()
 
+    def add_tasks(self, tasks: list[CompressionTask]):
+        if not tasks:
+            return
+        start_idx = len(self.tasks)
+        end_idx = start_idx + len(tasks) - 1
+        self.beginInsertRows(QModelIndex(), start_idx, end_idx)
+        for task in tasks:
+            self.tasks.append({
+                "id":     task.id,
+                "name":   task.path.name,
+                "type":   task.media_type.value,
+                "status": task.status.value,
+                "orig":   task.orig_size,
+                "new":    0,
+                "pct":    0.0,
+                "enc":    "",
+            })
+        self.endInsertRows()
+
     def _find(self, task_id: str) -> int | None:
         for i, t in enumerate(self.tasks):
             if t["id"] == task_id:
@@ -119,157 +156,159 @@ class TaskModel(QAbstractListModel):
         self.endResetModel()
 
 
-# ── Delegate ──────────────────────────────────────────────────────────────────
-
 class TaskDelegate(QStyledItemDelegate):
     cancel_requested = Signal(str)
 
-    ROW_H  = 62
-    _FONT_NAME   = QFont("Segoe UI", 13)
-    _FONT_META   = QFont("Segoe UI", 11)
-    _FONT_BADGE  = QFont("Segoe UI", 9)
+    ROW_H = 62
+    _FONT_NAME = QFont("Segoe UI", 12)
+    _FONT_META = QFont("Segoe UI", 11)
+    _FONT_BADGE = QFont("Segoe UI", 9)
     _FONT_NAME.setWeight(QFont.Weight.DemiBold)
     _FONT_META.setWeight(QFont.Weight.Medium)
     _FONT_BADGE.setWeight(QFont.Weight.Bold)
 
-    _IMG_BG   = QColor("#1e1b4b")
-    _IMG_FG   = QColor("#a78bfa")
-    _VID_BG   = QColor("#0c1a2e")
-    _VID_FG   = QColor("#38bdf8")
-    _NAME_COLOR  = QColor("#e2e8f0")
-    _SIZE_COLOR  = QColor("#475569")
-    _CANCEL_COLOR = QColor("#475569")
-    _BAR_BG   = QColor("#1e293b")
-    _PROGRESS_COLORS = {
-        "Queued":    QColor("#334155"),
-        "Running":   QColor("#38bdf8"),
-        "Done":      QColor("#10b981"),
-        "Error":     QColor("#f87171"),
-        "Skipped":   QColor("#14b8a6"),
-        "Cancelled": QColor("#64748b"),
-        "Paused":    QColor("#a78bfa"),
-    }
-
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._theme = "dark"
+        self._apply_palette()
+
+    def set_theme(self, theme: str):
+        self._theme = theme
+        self._apply_palette()
+
+    def _apply_palette(self):
+        if self._theme == "dark":
+            self._name_color = QColor("#f4f4f5")
+            self._size_color = QColor("#a1a1aa")
+            self._cancel_color = QColor("#71717a")
+            self._cancel_hover = QColor("#3f3f46")
+            self._bar_bg = QColor("#27272a")
+            self._hover_bg = QColor(255, 255, 255, 12)
+            self._img_bg = QColor("#1e293b")
+            self._img_fg = QColor("#60a5fa")
+            self._vid_bg = QColor("#1e293b")
+            self._vid_fg = QColor("#38bdf8")
+            self._status_colors = STATUS_COLORS_DARK
+            self._dot_colors = STATUS_DOT_DARK
+        else:
+            self._name_color = QColor("#0f172a")
+            self._size_color = QColor("#475569")
+            self._cancel_color = QColor("#64748b")
+            self._cancel_hover = QColor("#e2e8f0")
+            self._bar_bg = QColor("#e2e8f0")
+            self._hover_bg = QColor(0, 0, 0, 10)
+            self._img_bg = QColor("#eff6ff")
+            self._img_fg = QColor("#2563eb")
+            self._vid_bg = QColor("#f0f9ff")
+            self._vid_fg = QColor("#0284c7")
+            self._status_colors = STATUS_COLORS_LIGHT
+            self._dot_colors = STATUS_DOT_LIGHT
 
     def sizeHint(self, option, index):
         return QSize(0, self.ROW_H)
 
     def _status_color(self, status: str) -> QColor:
-        c = STATUS_COLORS.get(status, "#475569")
-        return QColor(c)
+        return QColor(self._status_colors.get(status, "#a1a1aa"))
 
     def _dot_color(self, status: str) -> QColor:
-        c = STATUS_DOT.get(status, "#334155")
-        return QColor(c)
+        return QColor(self._dot_colors.get(status, "#52525b"))
 
-    def _progress_color(self, status: str, pct: float) -> QColor:
-        c = self._PROGRESS_COLORS.get(status)
-        if c:
-            return c
-        return QColor("#38bdf8")
+    def _progress_color(self, status: str) -> QColor:
+        if status == "Done":
+            return QColor("#10b981")
+        if status == "Error":
+            return QColor("#ef4444")
+        if status == "Skipped":
+            return QColor("#f59e0b")
+        return QColor("#3b82f6" if self._theme == "dark" else "#2563eb")
+
+    def _get_cancel_rect(self, rect: QRect) -> QRect:
+        btn_size = 28
+        btn_x = rect.right() - 10 - btn_size
+        btn_y = rect.y() + (self.ROW_H - btn_size) // 2
+        return QRect(btn_x, btn_y, btn_size, btn_size)
 
     def paint(self, painter, option, index):
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing)
 
-        r      = option.rect
+        r = option.rect
         status = index.data(_TASK_ST)
-        pct    = index.data(_TASK_PCT) or 0.0
-        name   = index.data(_TASK_NAME) or ""
-        mtype  = index.data(_TASK_TYPE) or "image"
-        orig   = index.data(_TASK_ORIG) or 0
-        new_s  = index.data(_TASK_NEW) or 0
-        enc    = index.data(_TASK_ENC) or ""
+        pct = index.data(_TASK_PCT) or 0.0
+        name = index.data(_TASK_NAME) or ""
+        mtype = index.data(_TASK_TYPE) or "image"
+        orig = index.data(_TASK_ORIG) or 0
+        new_s = index.data(_TASK_NEW) or 0
+        enc = index.data(_TASK_ENC) or ""
 
-        is_done   = status in ("Done", "Error", "Skipped", "Cancelled")
-        is_hover  = option.state & QStyle.State_MouseOver
+        is_done = status in ("Done", "Error", "Skipped", "Cancelled")
+        is_hover = bool(option.state & QStyle.State_MouseOver)
 
-        # ── Background (subtle hover) ────────────────────────────────────────
         if is_hover:
-            painter.fillRect(r, QColor("#ffffff08"))
+            painter.fillRect(r, self._hover_bg)
 
-        # ── Layout positions ─────────────────────────────────────────────────
         ml, mr, mt, mb = 12, 10, 8, 8
         cx = r.x() + ml
         content_top = r.y() + mt
-        content_h   = self.ROW_H - mt - mb
+        content_h = self.ROW_H - mt - mb
 
-        # Cancel button
-        cancel_size = 24
-        cancel_x = r.right() - mr - cancel_size
-        self._cancel_rect = QRect(cancel_x, content_top + (content_h - cancel_size) // 2,
-                                  cancel_size, cancel_size)
+        cancel_rect = self._get_cancel_rect(r)
 
-        # Badge: IMG / VID
-        badge_w, badge_h = 30, 16
+        badge_w, badge_h = 32, 18
         badge_x = cx
         badge_y = content_top + (content_h - badge_h) // 2
         badge_rect = QRect(badge_x, badge_y, badge_w, badge_h)
 
-        # Content area between badge and cancel
         text_l = badge_rect.right() + 10
-        text_r = self._cancel_rect.left() - 6
+        text_r = cancel_rect.left() - 8
 
-        # Name line
         fmn = QFontMetrics(self._FONT_NAME)
         name_y = content_top + 1
-        name_h = fmn.height()  # ~18
+        name_h = fmn.height()
 
-        # Dot position
-        dot_s = 10
+        dot_s = 8
         dot_x = text_r - dot_s
         dot_y = name_y + (name_h - dot_s) // 2
 
-        # Name text available width
-        name_max_w = dot_x - text_l - 4
+        name_max_w = dot_x - text_l - 6
 
-        # Meta line
         fmm = QFontMetrics(self._FONT_META)
         meta_y = name_y + name_h + 1
-        meta_h = fmm.height()  # ~14
+        meta_h = fmm.height()
 
-        # Progress bar
         bar_y = meta_y + meta_h + 3
         bar_h = 3
 
-        # ── Draw badge ───────────────────────────────────────────────────────
+        # Draw type badge
         painter.save()
         painter.setPen(Qt.NoPen)
-        if mtype == "image":
-            painter.setBrush(self._IMG_BG)
-        else:
-            painter.setBrush(self._VID_BG)
-        painter.drawRoundedRect(badge_rect, 3, 3)
-        painter.restore()
-
-        painter.save()
+        painter.setBrush(self._img_bg if mtype == "image" else self._vid_bg)
+        painter.drawRoundedRect(badge_rect, 4, 4)
         painter.setFont(self._FONT_BADGE)
-        painter.setPen(self._IMG_FG if mtype == "image" else self._VID_FG)
+        painter.setPen(self._img_fg if mtype == "image" else self._vid_fg)
         painter.drawText(badge_rect, Qt.AlignCenter, "IMG" if mtype == "image" else "VID")
         painter.restore()
 
-        # ── Draw name (with ellipsis) ────────────────────────────────────────
+        # Draw filename
         painter.save()
         painter.setFont(self._FONT_NAME)
-        painter.setPen(self._NAME_COLOR)
+        painter.setPen(self._name_color)
         elided = fmn.elidedText(name, Qt.ElideRight, name_max_w)
         painter.drawText(text_l, name_y, name_max_w, name_h,
                          Qt.AlignLeft | Qt.AlignVCenter, elided)
         painter.restore()
 
-        # ── Draw status dot ───────────────────────────────────────────────────
+        # Draw status dot
         painter.save()
         painter.setPen(Qt.NoPen)
         painter.setBrush(self._dot_color(status))
         painter.drawEllipse(dot_x, dot_y, dot_s, dot_s)
         painter.restore()
 
-        # ── Draw meta text ────────────────────────────────────────────────────
+        # Draw status label and encoder info
         meta_text = status
         if enc:
-            meta_text += f"  [{enc}]"
+            meta_text += f" [{enc}]"
         painter.save()
         painter.setFont(self._FONT_META)
         painter.setPen(self._status_color(status))
@@ -277,52 +316,50 @@ class TaskDelegate(QStyledItemDelegate):
                          Qt.AlignLeft | Qt.AlignVCenter, meta_text)
         painter.restore()
 
-        # Size text
+        # Draw size and ratio info
         size_str = CompressionTask.fmt_size(orig)
         if is_done and new_s > 0:
             saved = max(0, orig - new_s)
-            spct  = (saved / orig * 100) if orig else 0
-            size_str = f"{CompressionTask.fmt_size(orig)} → {CompressionTask.fmt_size(new_s)}  ({spct:.1f}% saved)"
+            spct = (saved / orig * 100) if orig else 0
+            size_str = f"{CompressionTask.fmt_size(orig)} -> {CompressionTask.fmt_size(new_s)} ({spct:.1f}% saved)"
         painter.save()
         painter.setFont(self._FONT_META)
-        painter.setPen(self._SIZE_COLOR)
+        painter.setPen(self._size_color)
         tw = fmm.horizontalAdvance(size_str)
         painter.drawText(text_r - tw, meta_y, tw, meta_h,
                          Qt.AlignLeft | Qt.AlignVCenter, size_str)
         painter.restore()
 
-        # ── Draw progress bar ────────────────────────────────────────────────
+        # Draw progress bar
         bar_l = text_l
         bar_w = text_r - text_l
         bar_rect = QRect(bar_l, bar_y, bar_w, bar_h)
         painter.save()
         painter.setPen(Qt.NoPen)
-        painter.setBrush(self._BAR_BG)
+        painter.setBrush(self._bar_bg)
         painter.drawRoundedRect(bar_rect, 1, 1)
         if pct > 0:
             fill_w = int(bar_w * pct / 100.0)
             fill_rect = QRect(bar_l, bar_y, fill_w, bar_h)
-            painter.setBrush(self._progress_color(status, pct))
+            painter.setBrush(self._progress_color(status))
             painter.drawRoundedRect(fill_rect, 1, 1)
         painter.restore()
 
-        # ── Draw cancel button ───────────────────────────────────────────────
+        # Draw cancel button for active tasks
         if not is_done:
-            cancel_rect = self._cancel_rect
             if is_hover:
                 painter.save()
                 painter.setPen(Qt.NoPen)
-                painter.setBrush(QColor("#ffffff10"))
-                painter.drawRoundedRect(cancel_rect, 4, 4)
+                painter.setBrush(self._cancel_hover)
+                painter.drawRoundedRect(cancel_rect, 6, 6)
                 painter.restore()
-            # Draw X mark
             painter.save()
-            painter.setPen(QPen(self._CANCEL_COLOR, 1.5))
-            margin = 5
-            painter.drawLine(cancel_rect.left() + margin, cancel_rect.top() + margin,
-                             cancel_rect.right() - margin, cancel_rect.bottom() - margin)
-            painter.drawLine(cancel_rect.left() + margin, cancel_rect.bottom() - margin,
-                             cancel_rect.right() - margin, cancel_rect.top() + margin)
+            painter.setPen(QPen(self._cancel_color, 1.5))
+            m = 8
+            painter.drawLine(cancel_rect.left() + m, cancel_rect.top() + m,
+                             cancel_rect.right() - m, cancel_rect.bottom() - m)
+            painter.drawLine(cancel_rect.left() + m, cancel_rect.bottom() - m,
+                             cancel_rect.right() - m, cancel_rect.top() + m)
             painter.restore()
 
         painter.restore()
@@ -332,10 +369,7 @@ class TaskDelegate(QStyledItemDelegate):
             status = index.data(_TASK_ST)
             if status and status in ("Done", "Error", "Skipped", "Cancelled"):
                 return False
-            r = option.rect
-            cancel_x = r.right() - 10 - 24
-            cancel_y = r.y() + 8 + (62 - 8 - 8 - 24) // 2
-            cancel_rect = QRect(cancel_x, cancel_y, 24, 24)
+            cancel_rect = self._get_cancel_rect(option.rect)
             if cancel_rect.contains(event.pos()):
                 tid = index.data(_TASK_ID)
                 if tid:
@@ -343,8 +377,6 @@ class TaskDelegate(QStyledItemDelegate):
                 return True
         return super().editorEvent(event, model, option, index)
 
-
-# ── Queue widget ─────────────────────────────────────────────────────────────
 
 class QueueWidget(QWidget):
     cancel_task = Signal(str)
@@ -370,25 +402,33 @@ class QueueWidget(QWidget):
             QListView::item:selected { background: transparent; }
         """)
 
-        self._view.verticalScrollBar().setStyleSheet("""
-            QScrollBar:vertical {
-                background: transparent; width: 8px; margin: 0;
-            }
-            QScrollBar::handle:vertical {
-                background: #334155; border-radius: 4px; min-height: 30px;
-            }
-            QScrollBar::handle:vertical:hover { background: #475569; }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0; background: none;
-            }
-        """)
-
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._view)
 
+    def set_theme(self, theme: str):
+        self._delegate.set_theme(theme)
+        sb_handle = "#38383e" if theme == "dark" else "#cbd5e1"
+        sb_hover = "#52525b" if theme == "dark" else "#94a3b8"
+        self._view.verticalScrollBar().setStyleSheet(f"""
+            QScrollBar:vertical {{
+                background: transparent; width: 6px; margin: 0;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {sb_handle}; border-radius: 3px; min-height: 24px;
+            }}
+            QScrollBar::handle:vertical:hover {{ background: {sb_hover}; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0; background: none;
+            }}
+        """)
+        self._view.viewport().update()
+
     def add_task(self, task: CompressionTask):
         self._model.add_task(task)
+
+    def add_tasks(self, tasks: list[CompressionTask]):
+        self._model.add_tasks(tasks)
 
     def set_progress(self, task_id: str, pct: float):
         self._model.update_progress(task_id, pct)

@@ -1,11 +1,10 @@
-"""Image compression using Pillow + pillow-heif."""
+"""Image compression using Pillow with exception-safe temporary file management."""
 from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Optional
 import shutil
-import tempfile
 import threading
-import os
+import time
 
 try:
     import pillow_heif
@@ -14,8 +13,11 @@ try:
 except ImportError:
     HEIF_OK = False
 
-from PIL import Image, ExifTags
+from PIL import Image, ImageFile
 from .task import CompressionTask, TaskStatus
+
+# Prevent crashes on partially truncated or stream-interrupted images
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 ProgressCB = Callable[[float], None]
 
@@ -43,9 +45,14 @@ def compress_image(task: CompressionTask, settings: dict,
                    cancel_event: Optional[threading.Event] = None) -> None:
     _cancel = cancel_event or threading.Event()
 
+    src = task.path
+    dst = task.output_path
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = dst.parent / f".tmp_mc_{task.id}_{src.stem}{dst.suffix}"
+
     try:
         task.status = TaskStatus.RUNNING
-        task.start_time = __import__("time").time()
+        task.start_time = time.time()
         progress_cb(5.0)
 
         if _cancel.is_set():
@@ -53,102 +60,90 @@ def compress_image(task: CompressionTask, settings: dict,
             progress_cb(100.0)
             return
 
-        src = task.path
-        dst = task.output_path
-        dst.parent.mkdir(parents=True, exist_ok=True)
-
-        # Re-read orig_size if it wasn't captured at task creation
         if task.orig_size == 0 and src.exists():
             task.orig_size = src.stat().st_size
 
         preset_name = settings.get("preset", "balanced")
-        # Use image_quality (namespaced) to avoid video quality override
-        quality     = settings.get("image_quality",
-                      settings.get("quality",
-                      PRESETS.get(preset_name, {}).get("quality", 85)))
-        strip_meta  = settings.get("strip_metadata", False)
-        max_px      = settings.get("resize_max_px")  # None = keep original
-        lossless    = (preset_name == "lossless")
+        quality = settings.get("image_quality",
+                  settings.get("quality",
+                  PRESETS.get(preset_name, {}).get("quality", 85)))
+        strip_meta = settings.get("strip_metadata", False)
+        max_px = settings.get("resize_max_px")
+        lossless = (preset_name == "lossless")
 
         progress_cb(15.0)
 
-        with Image.open(src) as img:
-            progress_cb(40.0)
-            img = _resize(img, max_px)
+        with Image.open(src) as opened_img:
+            img = opened_img.copy()
 
-            fmt = dst.suffix.lower()
-            save_kwargs: dict = {"optimize": True}
+        progress_cb(40.0)
+        img = _resize(img, max_px)
 
-            if fmt in (".jpg", ".jpeg"):
-                if img.mode in ("RGBA", "P", "LA"):
-                    img = img.convert("RGB")
-                save_kwargs["quality"] = quality
-                save_kwargs["progressive"] = True
-                if not strip_meta:
-                    try:
-                        exif = img.info.get("exif")
-                        if exif:
-                            save_kwargs["exif"] = exif
-                    except Exception:
-                        pass
+        fmt = dst.suffix.lower()
+        save_kwargs: dict = {"optimize": True}
 
-            elif fmt == ".png":
-                compress_level = 1 if lossless else (6 if quality >= 85 else 9)
-                save_kwargs["compress_level"] = compress_level
-                if strip_meta:
-                    img.info.pop("exif", None)
+        if fmt in (".jpg", ".jpeg"):
+            if img.mode in ("RGBA", "P", "LA"):
+                img = img.convert("RGB")
+            save_kwargs["quality"] = quality
+            save_kwargs["progressive"] = True
+            if not strip_meta:
+                try:
+                    exif = img.info.get("exif")
+                    if exif:
+                        save_kwargs["exif"] = exif
+                except Exception:
+                    pass
 
-            elif fmt == ".webp":
-                save_kwargs["quality"] = quality
-                save_kwargs["lossless"] = lossless
-                save_kwargs["method"] = 4
+        elif fmt == ".png":
+            compress_level = 1 if lossless else (6 if quality >= 85 else 9)
+            save_kwargs["compress_level"] = compress_level
+            if strip_meta:
+                img.info.pop("exif", None)
 
-            elif fmt == ".gif":
-                save_kwargs.pop("optimize", None)
-                save_kwargs.pop("quality", None)
+        elif fmt == ".webp":
+            save_kwargs["quality"] = quality
+            save_kwargs["lossless"] = lossless
+            save_kwargs["method"] = 4
 
-            else:
-                # Fallback: convert to JPEG
-                if img.mode in ("RGBA", "P", "LA"):
-                    img = img.convert("RGB")
-                save_kwargs["quality"] = quality
+        elif fmt == ".gif":
+            save_kwargs.pop("optimize", None)
+            save_kwargs.pop("quality", None)
 
-            progress_cb(70.0)
+        else:
+            if img.mode in ("RGBA", "P", "LA"):
+                img = img.convert("RGB")
+            save_kwargs["quality"] = quality
 
-            if _cancel.is_set():
-                task.status = TaskStatus.CANCELLED
-                progress_cb(100.0)
-                return
+        progress_cb(70.0)
 
-            # Write to temp then atomically move
-            with tempfile.NamedTemporaryFile(
-                suffix=dst.suffix, dir=dst.parent, delete=False
-            ) as tmp:
-                tmp_path = Path(tmp.name)
+        if _cancel.is_set():
+            task.status = TaskStatus.CANCELLED
+            progress_cb(100.0)
+            return
 
-            img.save(tmp_path, **save_kwargs)
-            progress_cb(90.0)
+        img.save(tmp_path, **save_kwargs)
+        progress_cb(90.0)
 
         new_size = tmp_path.stat().st_size
-        # Replace if: compressed is smaller, OR output goes to a different path,
-        # OR orig_size was unknown (0) so we can't compare
         should_replace = (new_size < task.orig_size) or (dst != src) or (task.orig_size == 0)
         if should_replace:
             if dst != src and src.exists() and task.output_dir is None:
                 src.unlink()
-            shutil.move(str(tmp_path), str(dst))  # cross-fs safe
+            shutil.move(str(tmp_path), str(dst))
         else:
             tmp_path.unlink(missing_ok=True)
             new_size = task.orig_size
 
-        task.new_size     = new_size
+        task.new_size = new_size
         task.encoder_used = f"Pillow ({preset_name})"
-        task.status       = TaskStatus.DONE
+        task.status = TaskStatus.DONE
         progress_cb(100.0)
 
     except Exception as e:
-        task.status    = TaskStatus.ERROR
+        task.status = TaskStatus.ERROR
         task.error_msg = str(e)
         progress_cb(100.0)
     finally:
-        task.end_time = __import__("time").time()
+        tmp_path.unlink(missing_ok=True)
+        task.end_time = time.time()

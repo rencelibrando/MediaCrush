@@ -11,7 +11,6 @@ from typing import Optional
 from utils.process import hidden_subprocess_kwargs
 
 
-# ── Data class ───────────────────────────────────────────────────────────────
 
 @dataclass
 class HardwareInfo:
@@ -29,7 +28,6 @@ class HardwareInfo:
     # Diagnostics collected during detection
     diag_log:     list[str] = field(default_factory=list)
 
-    # ── Properties ───────────────────────────────────────────────────────────
 
     @property
     def has_any_gpu(self) -> bool:
@@ -65,7 +63,6 @@ class HardwareInfo:
         return enc
 
 
-# ── Low-level helpers ─────────────────────────────────────────────────────────
 
 def _run(cmd: list[str], timeout: int = 15) -> tuple[int, str, str]:
     try:
@@ -119,7 +116,6 @@ def _probe_encoder(info: HardwareInfo, label: str, encoders: list[str],
     return False, None
 
 
-# ── Encoder probes ────────────────────────────────────────────────────────────
 
 def _probe_vaapi(info: HardwareInfo) -> bool:
     if info.platform != "linux":
@@ -236,7 +232,8 @@ def _detect_gpu_name_linux(info: HardwareInfo):
         "/sys/class/drm/card1/device/product_name",
     ]:
         try:
-            info.gpu_name = open(path).read().strip()
+            with open(path, encoding="utf-8") as f:
+                info.gpu_name = f.read().strip()
             return
         except OSError:
             pass
@@ -286,10 +283,11 @@ def _detect_cpu_name(info: HardwareInfo):
 def _detect_cpu_name_linux(info: HardwareInfo):
     """Linux CPU detection via /proc/cpuinfo."""
     try:
-        for line in open("/proc/cpuinfo"):
-            if line.startswith("model name"):
-                info.cpu_name = line.split(":", 1)[1].strip()
-                return
+        with open("/proc/cpuinfo", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("model name"):
+                    info.cpu_name = line.split(":", 1)[1].strip()
+                    return
     except OSError:
         pass
 
@@ -312,7 +310,6 @@ def _detect_cpu_name_windows(info: HardwareInfo):
             return
 
 
-# ── Cache helpers ─────────────────────────────────────────────────────────────
 
 def _get_cache_path() -> str:
     """Get cross-platform cache path."""
@@ -372,7 +369,6 @@ def _save_cache(info: HardwareInfo):
         pass
 
 
-# ── Main detection function ───────────────────────────────────────────────────
 
 def detect_hardware(force: bool = False) -> HardwareInfo:
     if not force:
@@ -408,7 +404,6 @@ def detect_hardware(force: bool = False) -> HardwareInfo:
     return info
 
 
-# ── Live utilization helpers (optional, non-fatal) ────────────────────────────
 
 def get_cpu_usage() -> float:
     """Return CPU usage 0-100."""

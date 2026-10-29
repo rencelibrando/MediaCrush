@@ -1,49 +1,45 @@
-"""Logs panel — real-time, searchable, colored severity levels."""
+"""Logs panel with real-time streaming, search, and theme-aware formatting."""
 from __future__ import annotations
-import re
 from pathlib import Path
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QTextEdit, QLabel, QFileDialog, QLineEdit, QFrame, QSizePolicy
+    QTextEdit, QLabel, QFileDialog, QLineEdit
 )
-from PySide6.QtCore    import Qt, QTimer
-from PySide6.QtGui     import QTextCursor, QFont, QColor, QTextCharFormat
+from PySide6.QtGui import QTextCursor, QFont
 
 
-# ── Color scheme for log levels ───────────────────────────────────────────────
-
-_LEVEL_COLORS = {
-    "ok":      "#10b981",   # [OK]  / Done / success
-    "error":   "#f87171",   # [ERR] / Error
-    "skip":    "#fbbf24",   # [SKIP] / Skipped
-    "gpu":     "#38bdf8",   # GPU / VAAPI / NVENC
-    "cpu":     "#a78bfa",   # CPU
-    "info":    "#94a3b8",   # default
-    "warn":    "#fb923c",   # Warning
-    "start":   "#e2e8f0",   # Starting…
+_HTML_COLORS_DARK = {
+    "ok":    "#10b981",
+    "error": "#ef4444",
+    "skip":  "#f59e0b",
+    "gpu":   "#38bdf8",
+    "cpu":   "#60a5fa",
+    "info":  "#a1a1aa",
+    "warn":  "#f59e0b",
+    "start": "#f4f4f5",
 }
 
-_HTML_COLORS = {
-    "ok":    "#10b981",
-    "error": "#f87171",
-    "skip":  "#fbbf24",
-    "gpu":   "#38bdf8",
-    "cpu":   "#c084fc",
-    "info":  "#64748b",
-    "warn":  "#fb923c",
-    "start": "#e2e8f0",
+_HTML_COLORS_LIGHT = {
+    "ok":    "#059669",
+    "error": "#dc2626",
+    "skip":  "#d97706",
+    "gpu":   "#0284c7",
+    "cpu":   "#2563eb",
+    "info":  "#475569",
+    "warn":  "#d97706",
+    "start": "#0f172a",
 }
 
 
 def _classify(msg: str) -> str:
     ml = msg.lower()
-    if "[ok]" in ml or "done" in ml or "✓" in ml:
+    if "[ok]" in ml or "done" in ml or "completed" in ml:
         return "ok"
-    if "[err]" in ml or "error" in ml or "✗" in ml or "failed" in ml:
+    if "[err]" in ml or "error" in ml or "failed" in ml:
         return "error"
     if "[skip]" in ml or "skipped" in ml or "skip" in ml:
         return "skip"
-    if "gpu" in ml or "vaapi" in ml or "nvenc" in ml or "qsv" in ml:
+    if "gpu" in ml or "vaapi" in ml or "nvenc" in ml or "qsv" in ml or "amf" in ml:
         return "gpu"
     if "[cpu]" in ml or "starting [cpu]" in ml or "cpu" in ml:
         return "cpu"
@@ -54,36 +50,35 @@ def _classify(msg: str) -> str:
     return "info"
 
 
-def _to_html(msg: str) -> str:
-    color = _HTML_COLORS[_classify(msg)]
-    safe  = msg.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+def _to_html(msg: str, theme: str = "dark") -> str:
+    palette = _HTML_COLORS_DARK if theme == "dark" else _HTML_COLORS_LIGHT
+    color = palette.get(_classify(msg), palette["info"])
+    safe = msg.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return f'<span style="color:{color};">{safe}</span>'
 
 
-# ── Inline (sidebar/tab) logs widget ─────────────────────────────────────────
-
 class LogsWidget(QWidget):
-    """Embeddable log viewer with search, auto-scroll, and export."""
-
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._lines:    list[str]  = []
-        self._filtered: list[str]  = []
+        self._theme = "dark"
+        self._lines: list[str] = []
+        self._filtered: list[str] = []
         self._auto_scroll = True
         self._filter_text = ""
+        self._max_lines = 5000
         self._build_ui()
+        self.set_theme("dark")
 
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setSpacing(6)
         root.setContentsMargins(0, 0, 0, 0)
 
-        # ── Toolbar ───────────────────────────────────────────────────────────
         toolbar = QHBoxLayout()
         toolbar.setSpacing(6)
 
         self._search = QLineEdit()
-        self._search.setPlaceholderText("Filter logs…")
+        self._search.setPlaceholderText("Filter logs...")
         self._search.setClearButtonEnabled(True)
         self._search.textChanged.connect(self._on_filter_change)
         self._search.setFixedHeight(28)
@@ -111,54 +106,61 @@ class LogsWidget(QWidget):
 
         root.addLayout(toolbar)
 
-        # ── Log count badge ───────────────────────────────────────────────────
         self._count_lbl = QLabel("0 entries")
-        self._count_lbl.setStyleSheet(
-            "font-size: 10px; color: #334155; background: transparent; border: none;"
-        )
         root.addWidget(self._count_lbl)
 
-        # ── Text area ─────────────────────────────────────────────────────────
         self._text = QTextEdit()
         self._text.setReadOnly(True)
+        self._text.document().setMaximumBlockCount(3000)
         font = QFont("Cascadia Code", 10)
         font.setStyleHint(QFont.Monospace)
         self._text.setFont(font)
         self._text.setLineWrapMode(QTextEdit.NoWrap)
         root.addWidget(self._text)
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    def set_theme(self, theme: str):
+        self._theme = theme
+        lbl_color = "#a1a1aa" if theme == "dark" else "#64748b"
+        self._count_lbl.setStyleSheet(
+            f"font-size: 11px; color: {lbl_color}; background: transparent; border: none;"
+        )
+        self.load_lines(self._lines)
 
     def append_line(self, msg: str):
         self._lines.append(msg)
+        if len(self._lines) > self._max_lines:
+            self._lines = self._lines[-self._max_lines:]
+
         if self._filter_text and self._filter_text.lower() not in msg.lower():
             self._count_lbl.setText(
-                f"{len(self._lines)} total  •  {len(self._filtered)} shown"
+                f"{len(self._lines)} total | {len(self._filtered)} shown"
             )
             return
+
         self._filtered.append(msg)
-        self._text.append(_to_html(msg))
+        if len(self._filtered) > self._max_lines:
+            self._filtered = self._filtered[-self._max_lines:]
+
+        self._text.append(_to_html(msg, self._theme))
         self._count_lbl.setText(
-            f"{len(self._lines)} total  •  {len(self._filtered)} shown"
+            f"{len(self._lines)} total | {len(self._filtered)} shown"
         )
         if self._auto_scroll:
             self._text.moveCursor(QTextCursor.End)
 
     def load_lines(self, lines: list[str]):
-        self._lines    = list(lines)
+        self._lines = list(lines)[-self._max_lines:]
         self._filtered = []
         self._text.clear()
-        for msg in lines:
+        for msg in self._lines:
             if not self._filter_text or self._filter_text.lower() in msg.lower():
                 self._filtered.append(msg)
-                self._text.append(_to_html(msg))
+                self._text.append(_to_html(msg, self._theme))
         self._count_lbl.setText(
-            f"{len(self._lines)} total  •  {len(self._filtered)} shown"
+            f"{len(self._lines)} total | {len(self._filtered)} shown"
         )
         if self._auto_scroll:
             self._text.moveCursor(QTextCursor.End)
-
-    # ── Slots ─────────────────────────────────────────────────────────────────
 
     def _on_filter_change(self, text: str):
         self._filter_text = text
@@ -184,12 +186,10 @@ class LogsWidget(QWidget):
             Path(path).write_text("\n".join(self._lines), encoding="utf-8")
 
 
-# ── Standalone dialog wrapper (kept for backward compat) ─────────────────────
-
 class LogsDialog(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent, Qt.Window)
-        self.setWindowTitle("MediaCrush — Logs")
+        self.setWindowTitle("MediaCrush - Logs")
         self.setMinimumSize(820, 560)
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
