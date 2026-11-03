@@ -383,4 +383,28 @@ object AppIcons {
         lineTo(12f, 10f)
         close()
     }
+
+    // Queue / Task List icon
+    val Queue = vector("Queue") {
+        moveTo(8f, 6f); lineTo(21f, 6f)
+        moveTo(8f, 12f); lineTo(21f, 12f)
+        moveTo(8f, 18f); lineTo(21f, 18f)
+        moveTo(3f, 6f); lineTo(3.5f, 6f)
+        moveTo(3f, 12f); lineTo(3.5f, 12f)
+        moveTo(3f, 18f); lineTo(3.5f, 18f)
+    }
+
+    // Terminal / Logs icon
+    val Terminal = vector("Terminal") {
+        moveTo(4f, 17f); lineTo(10f, 12f); lineTo(4f, 7f)
+        moveTo(12f, 19f); lineTo(20f, 19f)
+    }
+
+    // Dashboard / Performance meter icon
+    val Dashboard = vector("Dashboard") {
+        moveTo(3f, 3f); lineTo(3f, 21f); lineTo(21f, 21f)
+        moveTo(7f, 16f); lineTo(7f, 12f)
+        moveTo(12f, 16f); lineTo(12f, 8f)
+        moveTo(17f, 16f); lineTo(17f, 5f)
+    }
 }

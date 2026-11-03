@@ -37,21 +37,21 @@ fun SupabasePrimaryButton(
             disabledContainerColor = if (isDark) Color(0xFF262626) else Color(0xFFE5E7EB),
             disabledContentColor = if (isDark) Color(0xFF666666) else Color(0xFF9CA3AF)
         ),
-        modifier = modifier.height(34.dp),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)
+        modifier = modifier.defaultMinSize(minHeight = 36.dp),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
     ) {
         if (icon != null) {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                modifier = Modifier.size(15.dp),
+                modifier = Modifier.size(16.dp),
                 tint = if (enabled) Color.Black else if (isDark) Color(0xFF666666) else Color(0xFF9CA3AF)
             )
             Spacer(modifier = Modifier.width(6.dp))
         }
         Text(
             text = text,
-            fontSize = 12.sp,
+            fontSize = 13.sp,
             fontWeight = FontWeight.SemiBold
         )
     }
@@ -81,21 +81,21 @@ fun SupabaseSecondaryButton(
             disabledContentColor = if (isDark) Color(0xFF666666) else Color(0xFFA1A1AA)
         ),
         border = androidx.compose.foundation.BorderStroke(1.dp, borderCol),
-        modifier = modifier.height(34.dp),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+        modifier = modifier.defaultMinSize(minHeight = 36.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
     ) {
         if (icon != null) {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                modifier = Modifier.size(14.dp),
+                modifier = Modifier.size(15.dp),
                 tint = if (enabled) textCol else (if (isDark) Color(0xFF666666) else Color(0xFFA1A1AA))
             )
             Spacer(modifier = Modifier.width(6.dp))
         }
         Text(
             text = text,
-            fontSize = 12.sp,
+            fontSize = 12.5.sp,
             fontWeight = FontWeight.Medium
         )
     }
@@ -121,21 +121,21 @@ fun SupabaseDangerButton(
             disabledContentColor = if (isDark) Color(0xFF666666) else Color(0xFFA1A1AA)
         ),
         border = androidx.compose.foundation.BorderStroke(1.dp, Color(0x40EF4444)),
-        modifier = modifier.height(34.dp),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+        modifier = modifier.defaultMinSize(minHeight = 36.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
     ) {
         if (icon != null) {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                modifier = Modifier.size(14.dp),
+                modifier = Modifier.size(15.dp),
                 tint = if (enabled) Color(0xFFF87171) else (if (isDark) Color(0xFF666666) else Color(0xFFA1A1AA))
             )
             Spacer(modifier = Modifier.width(6.dp))
         }
         Text(
             text = text,
-            fontSize = 12.sp,
+            fontSize = 12.5.sp,
             fontWeight = FontWeight.Medium
         )
     }
@@ -155,7 +155,7 @@ fun SupabaseIconButton(
 
     Box(
         modifier = modifier
-            .size(32.dp)
+            .defaultMinSize(minWidth = 36.dp, minHeight = 36.dp)
             .clip(RoundedCornerShape(6.dp))
             .background(bg)
             .border(1.dp, borderCol, RoundedCornerShape(6.dp))
@@ -165,7 +165,7 @@ fun SupabaseIconButton(
         Icon(
             imageVector = icon,
             contentDescription = tooltip,
-            modifier = Modifier.size(16.dp),
+            modifier = Modifier.size(18.dp),
             tint = iconTint
         )
     }
